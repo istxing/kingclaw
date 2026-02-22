@@ -1,8 +1,8 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// KingClaw - Ultra-lightweight personal AI agent
 // Inspired by and based on nanobot: https://github.com/HKUDS/nanobot
 // License: MIT
 //
-// Copyright (c) 2026 PicoClaw contributors
+// Copyright (c) 2026 KingClaw contributors
 
 package channels
 
@@ -11,10 +11,10 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/constants"
-	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/istxing/kingclaw/pkg/bus"
+	"github.com/istxing/kingclaw/pkg/config"
+	"github.com/istxing/kingclaw/pkg/constants"
+	"github.com/istxing/kingclaw/pkg/logger"
 )
 
 type Manager struct {

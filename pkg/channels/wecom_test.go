@@ -1,4 +1,4 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// KingClaw - Ultra-lightweight personal AI agent
 // WeCom Bot (企业微信智能机器人) channel tests
 
 package channels
@@ -20,8 +20,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/istxing/kingclaw/pkg/bus"
+	"github.com/istxing/kingclaw/pkg/config"
 )
 
 // generateTestAESKey generates a valid test AES key

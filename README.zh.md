@@ -1,125 +1,100 @@
 <div align="center">
-<img src="assets/logo.jpg" alt="PicoClaw" width="512">
 
-<h1>PicoClaw: 基于Go语言的超高效 AI 助手</h1>
+<h1>KingClaw: 基于Go语言的超高效 AI 助手</h1>
 
-<h3>10$硬件 · 10MB内存 · 1秒启动 · 皮皮虾，我们走！</h3>
+<h3>10$硬件 · 10MB内存 · 1秒启动</h3>
 
   <p>
     <img src="https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go&logoColor=white" alt="Go">
     <img src="https://img.shields.io/badge/Arch-x86__64%2C%20ARM64%2C%20RISC--V-blue" alt="Hardware">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
     <br>
-    <a href="https://picoclaw.io"><img src="https://img.shields.io/badge/Website-picoclaw.io-blue?style=flat&logo=google-chrome&logoColor=white" alt="Website"></a>
-    <a href="https://x.com/SipeedIO"><img src="https://img.shields.io/badge/X_(Twitter)-SipeedIO-black?style=flat&logo=x&logoColor=white" alt="Twitter"></a>
+    <a href="https://github.com/istxing/kingclaw"><img src="https://img.shields.io/badge/GitHub-istxing%2Fkingclaw-black?style=flat&logo=github&logoColor=white" alt="GitHub"></a>
   </p>
 
- **中文** | [日本語](README.ja.md) | [Português](README.pt-br.md) | [Tiếng Việt](README.vi.md) | [Français](README.fr.md) | [English](README.md)
+ **中文** | [English](README.md)
 </div>
 
 ---
 
-🦐 **PicoClaw** 是一个受 [nanobot](https://github.com/HKUDS/nanobot) 启发的超轻量级个人 AI 助手。它采用 **Go 语言** 从零重构，经历了一个“自举”过程——即由 AI Agent 自身驱动了整个架构迁移和代码优化。
+> [!IMPORTANT]
+> **项目声明**
+> KingClaw 由 `https://github.com/istxing/kingclaw` 独立维护。
+> Issues、Discussions、Releases 与 Roadmap 以本仓库为准。
 
-⚡️ **极致轻量**：可在 **10 美元** 的硬件上运行，内存占用 **<10MB**。这意味着比 OpenClaw 节省 99% 的内存，比 Mac mini 便宜 98%！
+🦞 **KingClaw** 是一个使用 **Go** 开发、面向本地优先与低资源场景的个人 AI 助手项目。
 
-<table align="center">
-<tr align="center">
-<td align="center" valign="top">
-<p align="center">
-<img src="assets/picoclaw_mem.gif" width="360" height="240">
-</p>
-</td>
-<td align="center" valign="top">
-<p align="center">
-<img src="assets/licheervnano.png" width="400" height="240">
-</p>
-</td>
-</tr>
-</table>
+⚡️ **目标定位**：快速启动、低内存占用、单二进制跨架构部署（x86_64 / ARM64 / RISC-V）。
 
 注意：人手有限，中文文档可能略有滞后，请优先查看英文文档。
 
 > [!CAUTION]
 > **🚨 SECURITY & OFFICIAL CHANNELS / 安全声明**
-> * **无加密货币 (NO CRYPTO):** PicoClaw **没有** 发行任何官方代币、Token 或虚拟货币。所有在 `pump.fun` 或其他交易平台上的相关声称均为 **诈骗**。
-> * **官方域名:** 唯一的官方网站是 **[picoclaw.io](https://picoclaw.io)**，公司官网是 **[sipeed.com](https://sipeed.com)**。
+> * **无加密货币 (NO CRYPTO):** KingClaw **没有** 发行任何官方代币、Token 或虚拟货币。所有在 `pump.fun` 或其他交易平台上的相关声称均为 **诈骗**。
+> * **官方仓库:** **[github.com/istxing/kingclaw](https://github.com/istxing/kingclaw)**。
+> * **官方域名:** 当前**没有官方网站域名**。
 > * **警惕:** 许多 `.ai/.org/.com/.net/...` 后缀的域名被第三方抢注，请勿轻信。
-> * **注意:** picoclaw正在初期的快速功能开发阶段，可能有尚未修复的网络安全问题，在1.0正式版发布前，请不要将其部署到生产环境中
-> * **注意:** picoclaw最近合并了大量PRs，近期版本可能内存占用较大(10~20MB)，我们将在功能较为收敛后进行资源占用优化.
+> * **注意:** kingclaw正在初期的快速功能开发阶段，可能有尚未修复的网络安全问题，在1.0正式版发布前，请不要将其部署到生产环境中
+> * **注意:** kingclaw最近合并了大量PRs，近期版本可能内存占用较大(10~20MB)，我们将在功能较为收敛后进行资源占用优化.
 
 
 ## 📢 新闻 (News)
-2026-02-16 🎉 PicoClaw 在一周内突破了12K star! 感谢大家的关注！PicoClaw 的成长速度超乎我们预期. 由于PR数量的快速膨胀，我们亟需社区开发者参与维护. 我们需要的志愿者角色和roadmap已经发布到了[这里](docs/picoclaw_community_roadmap_260216.md), 期待你的参与！
+2026-02-16 🎉 KingClaw 在一周内突破了12K star! 感谢大家的关注！KingClaw 的成长速度超乎我们预期。由于 PR 数量快速增长，我们亟需社区开发者参与维护。
 
-2026-02-13 🎉 **PicoClaw 在 4 天内突破 5000 Stars！** 感谢社区的支持！由于正值中国春节假期，PR 和 Issue 涌入较多，我们正在利用这段时间敲定 **项目路线图 (Roadmap)** 并组建 **开发者群组**，以便加速 PicoClaw 的开发。
+2026-02-13 🎉 **KingClaw 在 4 天内突破 5000 Stars！** 感谢社区的支持！由于正值中国春节假期，PR 和 Issue 涌入较多，我们正在利用这段时间敲定 **项目路线图 (Roadmap)** 并组建 **开发者群组**，以便加速 KingClaw 的开发。
 🚀 **行动号召：** 请在 GitHub Discussions 中提交您的功能请求 (Feature Requests)。我们将在接下来的周会上进行审查和优先级排序。
 
-2026-02-09 🎉 **PicoClaw 正式发布！** 仅用 1 天构建，旨在将 AI Agent 带入 10 美元硬件与 <10MB 内存的世界。🦐 PicoClaw（皮皮虾），我们走！
+2026-02-09 🎉 **KingClaw 正式发布！** 仅用 1 天构建，旨在将 AI Agent 带入 10 美元硬件与 <10MB 内存的世界。
 
 ## ✨ 特性
 
-🪶 **超轻量级**: 核心功能内存占用 <10MB — 比 Clawdbot 小 99%。
+🪶 **超轻量级**: 面向低资源环境优化运行时占用。
 
-💰 **极低成本**: 高效到足以在 10 美元的硬件上运行 — 比 Mac mini 便宜 98%。
+💰 **低成本部署**: 可运行在低成本 Linux 硬件上。
 
 ⚡️ **闪电启动**: 启动速度快 400 倍，即使在 0.6GHz 单核处理器上也能在 1 秒内启动。
 
 🌍 **真正可移植**: 跨 RISC-V、ARM 和 x86 架构的单二进制文件，一键运行！
 
-🤖 **AI 自举**: 纯 Go 语言原生实现 — 95% 的核心代码由 Agent 生成，并经由“人机回环 (Human-in-the-loop)”微调。
+🤖 **Agent 友好**: 为迭代式 Agent 工作流与工具链协作设计。
 
-|  | OpenClaw | NanoBot | **PicoClaw** |
-| --- | --- | --- | --- |
-| **语言** | TypeScript | Python | **Go** |
-| **RAM** | >1GB | >100MB | **< 10MB** |
-| **启动时间**</br>(0.8GHz core) | >500s | >30s | **<1s** |
-| **成本** | Mac Mini $599 | 大多数 Linux 开发板 ~$50 | **任意 Linux 开发板**</br>**低至 $10** |
+| 类别 | KingClaw |
+| --- | --- |
+| 语言 | Go |
+| 运行形态 | 单文件二进制 |
+| 支持平台 | Linux x86_64 / ARM64 / RISC-V |
+| 工作模式 | CLI Agent + Gateway Bot + 定时任务 |
 
-<img src="assets/compare.jpg" alt="PicoClaw" width="512">
 
 ## 🦾 演示
 
 ### 🛠️ 标准助手工作流
 
-<table align="center">
-<tr align="center">
-<th><p align="center">🧩 全栈工程师模式</p></th>
-<th><p align="center">🗂️ 日志与规划管理</p></th>
-<th><p align="center">🔎 网络搜索与学习</p></th>
-</tr>
-<tr>
-<td align="center"><p align="center"><img src="assets/picoclaw_code.gif" width="240" height="180"></p></td>
-<td align="center"><p align="center"><img src="assets/picoclaw_memory.gif" width="240" height="180"></p></td>
-<td align="center"><p align="center"><img src="assets/picoclaw_search.gif" width="240" height="180"></p></td>
-</tr>
-<tr>
-<td align="center">开发 • 部署 • 扩展</td>
-<td align="center">日程 • 自动化 • 记忆</td>
-<td align="center">发现 • 洞察 • 趋势</td>
-</tr>
-</table>
+标准工作流示例：
+
+- 全栈工程师模式：开发、部署、扩展
+- 日志与规划管理：日程、自动化、记忆
+- 网络搜索与学习：发现、洞察、趋势
 
 ### 📱 在手机上轻松运行
-picoclaw 可以将你10年前的老旧手机废物利用，变身成为你的AI助理！快速指南:
+kingclaw 可以将你10年前的老旧手机废物利用，变身成为你的AI助理！快速指南:
 1. 先去应用商店下载安装Termux
 2. 打开后执行指令
 ```bash
 # 注意: 下面的v0.1.1 可以换为你实际看到的最新版本
-wget https://github.com/sipeed/picoclaw/releases/download/v0.1.1/picoclaw-linux-arm64
-chmod +x picoclaw-linux-arm64
+wget https://github.com/istxing/kingclaw/releases/download/v0.1.1/kingclaw-linux-arm64
+chmod +x kingclaw-linux-arm64
 pkg install proot
-termux-chroot ./picoclaw-linux-arm64 onboard
+termux-chroot ./kingclaw-linux-arm64 onboard
 ```
-然后跟随下面的“快速开始”章节继续配置picoclaw即可使用！   
-<img src="assets/termux.jpg" alt="PicoClaw" width="512">
+然后跟随下面的“快速开始”章节继续配置kingclaw即可使用！   
 
 
 
 
 ### 🐜 创新的低占用部署
 
-PicoClaw 几乎可以部署在任何 Linux 设备上！
+KingClaw 几乎可以部署在任何 Linux 设备上！
 
 * $9.9 [LicheeRV-Nano](https://www.aliexpress.com/item/1005006519668532.html) E(网口) 或 W(WiFi6) 版本，用于极简家庭助手。
 * $30~50 [NanoKVM](https://www.aliexpress.com/item/1005007369816019.html)，或 $100 [NanoKVM-Pro](https://www.aliexpress.com/item/1005010048471263.html)，用于自动化服务器运维。
@@ -133,14 +108,14 @@ PicoClaw 几乎可以部署在任何 Linux 设备上！
 
 ### 使用预编译二进制文件安装
 
-从 [Release 页面](https://github.com/sipeed/picoclaw/releases) 下载适用于您平台的固件。
+从 [Release 页面](https://github.com/istxing/kingclaw/releases) 下载适用于您平台的固件。
 
 ### 从源码安装（获取最新特性，开发推荐）
 
 ```bash
-git clone https://github.com/sipeed/picoclaw.git
+git clone https://github.com/istxing/kingclaw.git
 
-cd picoclaw
+cd kingclaw
 make deps
 
 # 构建（无需安装）
@@ -156,12 +131,12 @@ make install
 
 ## 🐳 Docker Compose
 
-您也可以使用 Docker Compose 运行 PicoClaw，无需在本地安装任何环境。
+您也可以使用 Docker Compose 运行 KingClaw，无需在本地安装任何环境。
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/sipeed/picoclaw.git
-cd picoclaw
+git clone https://github.com/istxing/kingclaw.git
+cd kingclaw
 
 # 2. 设置 API Key
 cp config/config.example.json config/config.json
@@ -171,7 +146,7 @@ vim config/config.json      # 设置 DISCORD_BOT_TOKEN, API keys 等
 docker compose --profile gateway up -d
 
 # 4. 查看日志
-docker compose logs -f picoclaw-gateway
+docker compose logs -f kingclaw-gateway
 
 # 5. 停止
 docker compose --profile gateway down
@@ -182,10 +157,10 @@ docker compose --profile gateway down
 
 ```bash
 # 提问
-docker compose run --rm picoclaw-agent -m "2+2 等于几？"
+docker compose run --rm kingclaw-agent -m "2+2 等于几？"
 
 # 交互模式
-docker compose run --rm picoclaw-agent
+docker compose run --rm kingclaw-agent
 
 ```
 
@@ -200,24 +175,24 @@ docker compose --profile gateway up -d
 ### 🚀 快速开始
 
 > [!TIP]
-> 在 `~/.picoclaw/config.json` 中设置您的 API Key。
+> 在 `~/.kingclaw/config.json` 中设置您的 API Key。
 > 获取 API Key: [OpenRouter](https://openrouter.ai/keys) (LLM) · [Zhipu (智谱)](https://open.bigmodel.cn/usercenter/proj-mgmt/apikeys) (LLM)
 > 网络搜索是 **可选的** - 获取免费的 [Brave Search API](https://brave.com/search/api) (每月 2000 次免费查询)
 
 **1. 初始化 (Initialize)**
 
 ```bash
-picoclaw onboard
+kingclaw onboard
 
 ```
 
-**2. 配置 (Configure)** (`~/.picoclaw/config.json`)
+**2. 配置 (Configure)** (`~/.kingclaw/config.json`)
 
 ```json
 {
   "agents": {
     "defaults": {
-      "workspace": "~/.picoclaw/workspace",
+      "workspace": "~/.kingclaw/workspace",
       "model": "gpt4",
       "max_tokens": 8192,
       "temperature": 0.7,
@@ -268,7 +243,7 @@ picoclaw onboard
 **4. 对话 (Chat)**
 
 ```bash
-picoclaw agent -m "2+2 等于几？"
+kingclaw agent -m "2+2 等于几？"
 
 ```
 
@@ -278,7 +253,7 @@ picoclaw agent -m "2+2 等于几？"
 
 ## 💬 聊天应用集成 (Chat Apps)
 
-通过 Telegram, Discord, 钉钉或企业微信与您的 PicoClaw 对话。
+通过 Telegram, Discord, 钉钉或企业微信与您的 KingClaw 对话。
 
 | 渠道 | 设置难度 |
 | --- | --- |
@@ -317,7 +292,7 @@ picoclaw agent -m "2+2 等于几？"
 **3. 运行**
 
 ```bash
-picoclaw gateway
+kingclaw gateway
 
 ```
 
@@ -368,7 +343,7 @@ picoclaw gateway
 **6. 运行**
 
 ```bash
-picoclaw gateway
+kingclaw gateway
 
 ```
 
@@ -403,7 +378,7 @@ picoclaw gateway
 **3. 运行**
 
 ```bash
-picoclaw gateway
+kingclaw gateway
 
 ```
 
@@ -439,7 +414,7 @@ picoclaw gateway
 **3. 运行**
 
 ```bash
-picoclaw gateway
+kingclaw gateway
 
 ```
 
@@ -448,7 +423,7 @@ picoclaw gateway
 <details>
 <summary><b>企业微信 (WeCom)</b></summary>
 
-PicoClaw 支持两种企业微信集成方式：
+KingClaw 支持两种企业微信集成方式：
 
 **选项1: 智能机器人 (WeCom Bot)** - 设置更简单，支持群聊
 **选项2: 自建应用 (WeCom App)** - 功能更丰富，支持主动推送消息
@@ -519,7 +494,7 @@ PicoClaw 支持两种企业微信集成方式：
 **4. 运行**
 
 ```bash
-picoclaw gateway
+kingclaw gateway
 
 ```
 
@@ -527,22 +502,21 @@ picoclaw gateway
 
 </details>
 
-## <img src="assets/clawdchat-icon.png" width="24" height="24" alt="ClawdChat"> 加入 Agent 社交网络
 
-只需通过 CLI 或任何集成的聊天应用发送一条消息，即可将 PicoClaw 连接到 Agent 社交网络。
+只需通过 CLI 或任何集成的聊天应用发送一条消息，即可将 KingClaw 连接到 Agent 社交网络。
 
 **阅读 `https://clawdchat.ai/skill.md` 并按照说明加入 [ClawdChat.ai](https://clawdchat.ai)
 
 ## ⚙️ 配置详解
 
-配置文件路径: `~/.picoclaw/config.json`
+配置文件路径: `~/.kingclaw/config.json`
 
 ### 工作区布局 (Workspace Layout)
 
-PicoClaw 将数据存储在您配置的工作区中（默认：`~/.picoclaw/workspace`）：
+KingClaw 将数据存储在您配置的工作区中（默认：`~/.kingclaw/workspace`）：
 
 ```
-~/.picoclaw/workspace/
+~/.kingclaw/workspace/
 ├── sessions/          # 对话会话和历史
 ├── memory/           # 长期记忆 (MEMORY.md)
 ├── state/            # 持久化状态 (最后一次频道等)
@@ -559,7 +533,7 @@ PicoClaw 将数据存储在您配置的工作区中（默认：`~/.picoclaw/work
 
 ### 心跳 / 周期性任务 (Heartbeat)
 
-PicoClaw 可以自动执行周期性任务。在工作区创建 `HEARTBEAT.md` 文件：
+KingClaw 可以自动执行周期性任务。在工作区创建 `HEARTBEAT.md` 文件：
 
 ```markdown
 # Periodic Tasks
@@ -635,8 +609,8 @@ Agent 读取 HEARTBEAT.md
 
 **环境变量:**
 
-* `PICOCLAW_HEARTBEAT_ENABLED=false` 禁用
-* `PICOCLAW_HEARTBEAT_INTERVAL=60` 更改间隔
+* `KINGCLAW_HEARTBEAT_ENABLED=false` 禁用
+* `KINGCLAW_HEARTBEAT_INTERVAL=60` 更改间隔
 
 ### 提供商 (Providers)
 
@@ -657,7 +631,7 @@ Agent 读取 HEARTBEAT.md
 
 ### 模型配置 (model_list)
 
-> **新功能！** PicoClaw 现在采用**以模型为中心**的配置方式。只需使用 `厂商/模型` 格式（如 `zhipu/glm-4.7`）即可添加新的 provider——**无需修改任何代码！**
+> **新功能！** KingClaw 现在采用**以模型为中心**的配置方式。只需使用 `厂商/模型` 格式（如 `zhipu/glm-4.7`）即可添加新的 provider——**无需修改任何代码！**
 
 该设计同时支持**多 Agent 场景**，提供灵活的 Provider 选择：
 
@@ -754,7 +728,7 @@ Agent 读取 HEARTBEAT.md
   "auth_method": "oauth"
 }
 ```
-> 运行 `picoclaw auth login --provider anthropic` 来设置 OAuth 凭证。
+> 运行 `kingclaw auth login --provider anthropic` 来设置 OAuth 凭证。
 
 **Ollama (本地)**
 ```json
@@ -776,7 +750,7 @@ Agent 读取 HEARTBEAT.md
 
 #### 负载均衡
 
-为同一个模型名称配置多个端点——PicoClaw 会自动在它们之间轮询：
+为同一个模型名称配置多个端点——KingClaw 会自动在它们之间轮询：
 
 ```json
 {
@@ -852,7 +826,7 @@ Agent 读取 HEARTBEAT.md
 {
   "agents": {
     "defaults": {
-      "workspace": "~/.picoclaw/workspace",
+      "workspace": "~/.kingclaw/workspace",
       "model": "glm-4.7",
       "max_tokens": 8192,
       "temperature": 0.7,
@@ -872,7 +846,7 @@ Agent 读取 HEARTBEAT.md
 **3. 运行**
 
 ```bash
-picoclaw agent -m "你好"
+kingclaw agent -m "你好"
 
 ```
 
@@ -955,23 +929,23 @@ picoclaw agent -m "你好"
 
 | 命令 | 描述 |
 | --- | --- |
-| `picoclaw onboard` | 初始化配置和工作区 |
-| `picoclaw agent -m "..."` | 与 Agent 对话 |
-| `picoclaw agent` | 交互式聊天模式 |
-| `picoclaw gateway` | 启动网关 (Gateway) |
-| `picoclaw status` | 显示状态 |
-| `picoclaw cron list` | 列出所有定时任务 |
-| `picoclaw cron add ...` | 添加定时任务 |
+| `kingclaw onboard` | 初始化配置和工作区 |
+| `kingclaw agent -m "..."` | 与 Agent 对话 |
+| `kingclaw agent` | 交互式聊天模式 |
+| `kingclaw gateway` | 启动网关 (Gateway) |
+| `kingclaw status` | 显示状态 |
+| `kingclaw cron list` | 列出所有定时任务 |
+| `kingclaw cron add ...` | 添加定时任务 |
 
 ### 定时任务 / 提醒 (Scheduled Tasks)
 
-PicoClaw 通过 `cron` 工具支持定时提醒和重复任务：
+KingClaw 通过 `cron` 工具支持定时提醒和重复任务：
 
 * **一次性提醒**: "Remind me in 10 minutes" (10分钟后提醒我) → 10分钟后触发一次
 * **重复任务**: "Remind me every 2 hours" (每2小时提醒我) → 每2小时触发
 * **Cron 表达式**: "Remind me at 9am daily" (每天上午9点提醒我) → 使用 cron 表达式
 
-任务存储在 `~/.picoclaw/workspace/cron/` 中并自动处理。
+任务存储在 `~/.kingclaw/workspace/cron/` 中并自动处理。
 
 ## 🤝 贡献与路线图 (Roadmap)
 
@@ -985,18 +959,17 @@ PicoClaw 通过 `cron` 工具支持定时提醒和重复任务：
 
 Discord:  [https://discord.gg/V4sAZ9XWpN](https://discord.gg/V4sAZ9XWpN)
 
-<img src="assets/wechat.png" alt="PicoClaw" width="512">
 
 ## 🐛 疑难解答 (Troubleshooting)
 
 ### 网络搜索提示 "API 配置问题"
 
-如果您尚未配置搜索 API Key，这是正常的。PicoClaw 会提供手动搜索的帮助链接。
+如果您尚未配置搜索 API Key，这是正常的。KingClaw 会提供手动搜索的帮助链接。
 
 启用网络搜索：
 
 1. 在 [https://brave.com/search/api](https://brave.com/search/api) 获取免费 API Key (每月 2000 次免费查询)
-2. 添加到 `~/.picoclaw/config.json`:
+2. 添加到 `~/.kingclaw/config.json`:
 ```json
 {
   "tools": {
@@ -1024,7 +997,7 @@ Discord:  [https://discord.gg/V4sAZ9XWpN](https://discord.gg/V4sAZ9XWpN)
 
 ### Telegram bot 提示 "Conflict: terminated by other getUpdates"
 
-这表示有另一个机器人实例正在运行。请确保同一时间只有一个 `picoclaw gateway` 进程在运行。
+这表示有另一个机器人实例正在运行。请确保同一时间只有一个 `kingclaw gateway` 进程在运行。
 
 ---
 

@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/istxing/kingclaw/pkg/bus"
 )
 
 type Channel interface {

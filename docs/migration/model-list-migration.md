@@ -2,6 +2,9 @@
 
 This guide explains how to migrate from the legacy `providers` configuration to the new `model_list` format.
 
+> Note: this is a configuration-schema migration inside KingClaw.
+> It is unrelated to the removed OpenClaw-to-KingClaw migration command.
+
 ## Why Migrate?
 
 The new `model_list` configuration offers several advantages:
@@ -215,5 +218,5 @@ api_key or api_base is required for HTTP-based protocol "xxx"
 
 ## Need Help?
 
-- [GitHub Issues](https://github.com/sipeed/picoclaw/issues)
-- [Discussion #122](https://github.com/sipeed/picoclaw/discussions/122): Original proposal
+- [GitHub Issues](https://github.com/istxing/kingclaw/issues)
+- [Discussion #122](https://github.com/istxing/kingclaw/discussions/122): Original proposal

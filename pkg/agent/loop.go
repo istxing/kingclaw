@@ -1,8 +1,8 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// KingClaw - Ultra-lightweight personal AI agent
 // Inspired by and based on nanobot: https://github.com/HKUDS/nanobot
 // License: MIT
 //
-// Copyright (c) 2026 PicoClaw contributors
+// Copyright (c) 2026 KingClaw contributors
 
 package agent
 
@@ -16,17 +16,17 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/channels"
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/constants"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/providers"
-	"github.com/sipeed/picoclaw/pkg/routing"
-	"github.com/sipeed/picoclaw/pkg/skills"
-	"github.com/sipeed/picoclaw/pkg/state"
-	"github.com/sipeed/picoclaw/pkg/tools"
-	"github.com/sipeed/picoclaw/pkg/utils"
+	"github.com/istxing/kingclaw/pkg/bus"
+	"github.com/istxing/kingclaw/pkg/channels"
+	"github.com/istxing/kingclaw/pkg/config"
+	"github.com/istxing/kingclaw/pkg/constants"
+	"github.com/istxing/kingclaw/pkg/logger"
+	"github.com/istxing/kingclaw/pkg/providers"
+	"github.com/istxing/kingclaw/pkg/routing"
+	"github.com/istxing/kingclaw/pkg/skills"
+	"github.com/istxing/kingclaw/pkg/state"
+	"github.com/istxing/kingclaw/pkg/tools"
+	"github.com/istxing/kingclaw/pkg/utils"
 )
 
 type AgentLoop struct {
@@ -663,7 +663,7 @@ func (al *AgentLoop) runLLMIteration(
 				})
 
 			// Create async callback for tools that implement AsyncTool
-			// NOTE: Following openclaw's design, async tools do NOT send results directly to users.
+			// NOTE: Async tools do NOT send results directly to users.
 			// Instead, they notify the agent via PublishInbound, and the agent decides
 			// whether to forward the result to the user (in processSystemMessage).
 			asyncCallback := func(callbackCtx context.Context, result *tools.ToolResult) {

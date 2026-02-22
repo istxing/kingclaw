@@ -1,14 +1,14 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// KingClaw - Ultra-lightweight personal AI agent
 // License: MIT
 //
-// Copyright (c) 2026 PicoClaw contributors
+// Copyright (c) 2026 KingClaw contributors
 
 package providers
 
 import (
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/istxing/kingclaw/pkg/config"
 )
 
 func TestExtractProtocol(t *testing.T) {

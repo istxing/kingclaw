@@ -3,7 +3,7 @@ package agent
 import (
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/istxing/kingclaw/pkg/providers"
 )
 
 func TestSanitizeHistoryForProvider_KeepsMultipleToolResultsSameTurn(t *testing.T) {

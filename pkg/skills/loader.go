@@ -10,7 +10,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/istxing/kingclaw/pkg/logger"
 )
 
 var namePattern = regexp.MustCompile(`^[a-zA-Z0-9]+(-[a-zA-Z0-9]+)*$`)
@@ -56,7 +56,7 @@ func (info SkillInfo) validate() error {
 type SkillsLoader struct {
 	workspace       string
 	workspaceSkills string // workspace skills (项目级别)
-	globalSkills    string // 全局 skills (~/.picoclaw/skills)
+	globalSkills    string // 全局 skills (~/.kingclaw/skills)
 	builtinSkills   string // 内置 skills
 }
 
@@ -64,7 +64,7 @@ func NewSkillsLoader(workspace string, globalSkills string, builtinSkills string
 	return &SkillsLoader{
 		workspace:       workspace,
 		workspaceSkills: filepath.Join(workspace, "skills"),
-		globalSkills:    globalSkills, // ~/.picoclaw/skills
+		globalSkills:    globalSkills, // ~/.kingclaw/skills
 		builtinSkills:   builtinSkills,
 	}
 }
@@ -99,7 +99,7 @@ func (sl *SkillsLoader) ListSkills() []SkillInfo {
 		}
 	}
 
-	// 全局 skills (~/.picoclaw/skills) - 被 workspace skills 覆盖
+	// 全局 skills (~/.kingclaw/skills) - 被 workspace skills 覆盖
 	if sl.globalSkills != "" {
 		if dirs, err := os.ReadDir(sl.globalSkills); err == nil {
 			for _, dir := range dirs {
@@ -190,7 +190,7 @@ func (sl *SkillsLoader) LoadSkill(name string) (string, bool) {
 		}
 	}
 
-	// 2. 其次从全局 skills 加载 (~/.picoclaw/skills)
+	// 2. 其次从全局 skills 加载 (~/.kingclaw/skills)
 	if sl.globalSkills != "" {
 		skillFile := filepath.Join(sl.globalSkills, name, "SKILL.md")
 		if content, err := os.ReadFile(skillFile); err == nil {

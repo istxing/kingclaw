@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -44,8 +45,8 @@ func OpenAIOAuthConfig() OAuthProviderConfig {
 func GoogleAntigravityOAuthConfig() OAuthProviderConfig {
 	// Configure credentials via environment variables.
 	// Leave placeholders by default to avoid embedding secrets in source history.
-	clientID := strings.TrimSpace(os.Getenv("PICOCLAW_ANTIGRAVITY_CLIENT_ID"))
-	clientSecret := strings.TrimSpace(os.Getenv("PICOCLAW_ANTIGRAVITY_CLIENT_SECRET"))
+	clientID := strings.TrimSpace(os.Getenv("KINGCLAW_ANTIGRAVITY_CLIENT_ID"))
+	clientSecret := strings.TrimSpace(os.Getenv("KINGCLAW_ANTIGRAVITY_CLIENT_SECRET"))
 	return OAuthProviderConfig{
 		Issuer:       "https://accounts.google.com/o/oauth2/v2",
 		TokenURL:     "https://oauth2.googleapis.com/token",
@@ -386,7 +387,7 @@ func buildAuthorizeURL(cfg OAuthProviderConfig, pkce PKCECodes, state, redirectU
 		params.Set("id_token_add_organizations", "true")
 		params.Set("codex_cli_simplified_flow", "true")
 		if strings.Contains(strings.ToLower(cfg.Issuer), "auth.openai.com") {
-			params.Set("originator", "picoclaw")
+			params.Set("originator", "kingclaw")
 		}
 		if cfg.Originator != "" {
 			params.Set("originator", cfg.Originator)

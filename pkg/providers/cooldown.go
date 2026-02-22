@@ -174,7 +174,7 @@ func (ct *CooldownTracker) getOrCreate(provider string) *cooldownEntry {
 }
 
 // calculateStandardCooldown computes standard exponential backoff.
-// Formula from OpenClaw: min(1h, 1min * 5^min(n-1, 3))
+// Formula: min(1h, 1min * 5^min(n-1, 3))
 //
 //	1 error  → 1 min
 //	2 errors → 5 min
@@ -189,7 +189,7 @@ func calculateStandardCooldown(errorCount int) time.Duration {
 }
 
 // calculateBillingCooldown computes billing-specific exponential backoff.
-// Formula from OpenClaw: min(24h, 5h * 2^min(n-1, 10))
+// Formula: min(24h, 5h * 2^min(n-1, 10))
 //
 //	1 error  → 5 hours
 //	2 errors → 10 hours

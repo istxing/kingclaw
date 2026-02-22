@@ -1,5 +1,8 @@
 # Board Pinout & Pinmux Reference
 
+> Source policy: this file is a maintained in-repo reference.
+> Always validate pinmux/bus mapping on the target board with runtime checks (`i2c detect`, `spi list`, `ls /dev/i2c-*`, `ls /dev/spidev*`) before write operations.
+
 ## LicheeRV Nano (SG2002)
 
 ### I2C Buses
@@ -71,7 +74,7 @@ ls /dev/spidev*
 ```bash
 # Configure pins using pinmap utility
 # (MaixCAM uses a pinmap tool instead of devmem)
-# Refer to: https://wiki.sipeed.com/hardware/en/maixcam/gpio.html
+# Refer to your board vendor pinmap manual for exact mappings
 
 # Load i2c-dev
 modprobe i2c-dev
@@ -109,7 +112,7 @@ ls /dev/i2c-*
 Uses the same SG2002 SoC as LicheeRV Nano. GPIO and I2C access follows the same pinmux procedure. Refer to the LicheeRV Nano section above.
 
 Check NanoKVM-specific pin headers for available I2C/SPI lines:
-- https://wiki.sipeed.com/hardware/en/kvm/NanoKVM/introduction.html
+- Refer to your board's official manual and silk-screen labels.
 
 ---
 
@@ -118,7 +121,7 @@ Check NanoKVM-specific pin headers for available I2C/SPI lines:
 ### devmem not found
 The `devmem` utility may not be in the default image. Options:
 - Use `busybox devmem` if busybox is installed
-- Download devmem from the Sipeed package repository
+- Install via your distro package manager or copy a known-good static binary
 - Cross-compile from source (single C file)
 
 ### Dynamic bus numbering
@@ -126,6 +129,6 @@ I2C adapter numbers can change between boots depending on driver load order. Alw
 
 ### Permissions
 `/dev/i2c-*` and `/dev/spidev*` typically require root access. Options:
-- Run picoclaw as root
+- Run kingclaw as root
 - Add user to `i2c` and `spi` groups
 - Create udev rules: `SUBSYSTEM=="i2c-dev", MODE="0666"`

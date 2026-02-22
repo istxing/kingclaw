@@ -10,11 +10,11 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/utils"
-	"github.com/sipeed/picoclaw/pkg/voice"
+	"github.com/istxing/kingclaw/pkg/bus"
+	"github.com/istxing/kingclaw/pkg/config"
+	"github.com/istxing/kingclaw/pkg/logger"
+	"github.com/istxing/kingclaw/pkg/utils"
+	"github.com/istxing/kingclaw/pkg/voice"
 )
 
 const (
