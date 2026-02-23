@@ -9,7 +9,8 @@ import (
 
 // FallbackChain orchestrates model fallback across multiple candidates.
 type FallbackChain struct {
-	cooldown *CooldownTracker
+	cooldown    *CooldownTracker
+	retryPolicy RetryPolicy
 }
 
 // FallbackCandidate represents one model/provider to try.
@@ -28,17 +29,54 @@ type FallbackResult struct {
 
 // FallbackAttempt records one attempt in the fallback chain.
 type FallbackAttempt struct {
-	Provider string
-	Model    string
-	Error    error
-	Reason   FailoverReason
-	Duration time.Duration
-	Skipped  bool // true if skipped due to cooldown
+	Provider      string
+	Model         string
+	Error         error
+	Reason        FailoverReason
+	Duration      time.Duration
+	Skipped       bool // true if skipped due to cooldown
+	RetryOrdinal  int  // 0 = first try, 1+ = retry count for same provider/model
+	RetryBudget   int  // configured retry budget for this failure reason
+	RetryConsumed int  // retries consumed (including this failed try) for this reason
+}
+
+// RetryPolicy controls same-candidate retry budget before falling back to next candidate.
+// Budgets are per request and keyed by FailoverReason.
+type RetryPolicy struct {
+	ReasonBudgets map[FailoverReason]int
+}
+
+func defaultRetryPolicy() RetryPolicy {
+	return RetryPolicy{
+		ReasonBudgets: map[FailoverReason]int{},
+	}
 }
 
 // NewFallbackChain creates a new fallback chain with the given cooldown tracker.
 func NewFallbackChain(cooldown *CooldownTracker) *FallbackChain {
-	return &FallbackChain{cooldown: cooldown}
+	return &FallbackChain{
+		cooldown:    cooldown,
+		retryPolicy: defaultRetryPolicy(),
+	}
+}
+
+// SetRetryBudget sets retry budget for one error reason.
+// budget <= 0 disables retries for the reason.
+func (fc *FallbackChain) SetRetryBudget(reason FailoverReason, budget int) {
+	if fc == nil {
+		return
+	}
+	if fc.retryPolicy.ReasonBudgets == nil {
+		fc.retryPolicy.ReasonBudgets = make(map[FailoverReason]int)
+	}
+	fc.retryPolicy.ReasonBudgets[reason] = max(0, budget)
+}
+
+func (fc *FallbackChain) retryBudget(reason FailoverReason) int {
+	if fc == nil || fc.retryPolicy.ReasonBudgets == nil {
+		return 0
+	}
+	return max(0, fc.retryPolicy.ReasonBudgets[reason])
 }
 
 // ResolveCandidates parses model config into a deduplicated candidate list.
@@ -95,8 +133,9 @@ func (fc *FallbackChain) Execute(
 	result := &FallbackResult{
 		Attempts: make([]FallbackAttempt, 0, len(candidates)),
 	}
+	retryConsumed := make(map[FailoverReason]int)
 
-	for i, candidate := range candidates {
+	for _, candidate := range candidates {
 		// Check context before each attempt.
 		if ctx.Err() == context.Canceled {
 			return nil, context.Canceled
@@ -119,75 +158,94 @@ func (fc *FallbackChain) Execute(
 			continue
 		}
 
-		// Execute the run function.
-		start := time.Now()
-		resp, err := run(ctx, candidate.Provider, candidate.Model)
-		elapsed := time.Since(start)
+		retryOrdinal := 0
+		for {
+			// Execute the run function.
+			start := time.Now()
+			resp, err := run(ctx, candidate.Provider, candidate.Model)
+			elapsed := time.Since(start)
 
-		if err == nil {
-			// Success.
-			fc.cooldown.MarkSuccess(candidate.Provider)
-			result.Response = resp
-			result.Provider = candidate.Provider
-			result.Model = candidate.Model
-			return result, nil
-		}
+			if err == nil {
+				// Success.
+				fc.cooldown.MarkSuccess(candidate.Provider)
+				result.Response = resp
+				result.Provider = candidate.Provider
+				result.Model = candidate.Model
+				return result, nil
+			}
 
-		// Context cancellation: abort immediately, no fallback.
-		if ctx.Err() == context.Canceled {
+			// Context cancellation: abort immediately, no fallback.
+			if ctx.Err() == context.Canceled {
+				result.Attempts = append(result.Attempts, FallbackAttempt{
+					Provider:     candidate.Provider,
+					Model:        candidate.Model,
+					Error:        err,
+					Duration:     elapsed,
+					RetryOrdinal: retryOrdinal,
+				})
+				return nil, context.Canceled
+			}
+
+			// Classify the error.
+			failErr := ClassifyError(err, candidate.Provider, candidate.Model)
+
+			if failErr == nil {
+				// Unclassifiable error: do not fallback, return immediately.
+				result.Attempts = append(result.Attempts, FallbackAttempt{
+					Provider:     candidate.Provider,
+					Model:        candidate.Model,
+					Error:        err,
+					Duration:     elapsed,
+					RetryOrdinal: retryOrdinal,
+				})
+				return nil, fmt.Errorf("fallback: unclassified error from %s/%s: %w",
+					candidate.Provider, candidate.Model, err)
+			}
+
+			reason := failErr.Reason
+			retryBudget := fc.retryBudget(reason)
+			consumed := retryConsumed[reason]
+
+			// Non-retriable error: abort immediately.
+			if !failErr.IsRetriable() {
+				result.Attempts = append(result.Attempts, FallbackAttempt{
+					Provider:      candidate.Provider,
+					Model:         candidate.Model,
+					Error:         failErr,
+					Reason:        reason,
+					Duration:      elapsed,
+					RetryOrdinal:  retryOrdinal,
+					RetryBudget:   retryBudget,
+					RetryConsumed: consumed,
+				})
+				return nil, failErr
+			}
+
+			// Retriable error: mark failure and decide same-candidate retry or next candidate.
+			fc.cooldown.MarkFailure(candidate.Provider, reason)
 			result.Attempts = append(result.Attempts, FallbackAttempt{
-				Provider: candidate.Provider,
-				Model:    candidate.Model,
-				Error:    err,
-				Duration: elapsed,
+				Provider:      candidate.Provider,
+				Model:         candidate.Model,
+				Error:         failErr,
+				Reason:        reason,
+				Duration:      elapsed,
+				RetryOrdinal:  retryOrdinal,
+				RetryBudget:   retryBudget,
+				RetryConsumed: consumed,
 			})
-			return nil, context.Canceled
-		}
 
-		// Classify the error.
-		failErr := ClassifyError(err, candidate.Provider, candidate.Model)
+			if consumed < retryBudget {
+				retryConsumed[reason] = consumed + 1
+				retryOrdinal++
+				continue
+			}
 
-		if failErr == nil {
-			// Unclassifiable error: do not fallback, return immediately.
-			result.Attempts = append(result.Attempts, FallbackAttempt{
-				Provider: candidate.Provider,
-				Model:    candidate.Model,
-				Error:    err,
-				Duration: elapsed,
-			})
-			return nil, fmt.Errorf("fallback: unclassified error from %s/%s: %w",
-				candidate.Provider, candidate.Model, err)
-		}
-
-		// Non-retriable error: abort immediately.
-		if !failErr.IsRetriable() {
-			result.Attempts = append(result.Attempts, FallbackAttempt{
-				Provider: candidate.Provider,
-				Model:    candidate.Model,
-				Error:    failErr,
-				Reason:   failErr.Reason,
-				Duration: elapsed,
-			})
-			return nil, failErr
-		}
-
-		// Retriable error: mark failure and continue to next candidate.
-		fc.cooldown.MarkFailure(candidate.Provider, failErr.Reason)
-		result.Attempts = append(result.Attempts, FallbackAttempt{
-			Provider: candidate.Provider,
-			Model:    candidate.Model,
-			Error:    failErr,
-			Reason:   failErr.Reason,
-			Duration: elapsed,
-		})
-
-		// If this was the last candidate, return aggregate error.
-		if i == len(candidates)-1 {
-			return nil, &FallbackExhaustedError{Attempts: result.Attempts}
+			// Retry budget exhausted for this reason: try next candidate.
+			break
 		}
 	}
 
-	// All candidates were skipped (all in cooldown).
+	// All candidates failed or were skipped.
 	return nil, &FallbackExhaustedError{Attempts: result.Attempts}
 }
 

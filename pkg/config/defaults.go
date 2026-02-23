@@ -10,14 +10,25 @@ func DefaultConfig() *Config {
 	return &Config{
 		Agents: AgentsConfig{
 			Defaults: AgentDefaults{
-				Workspace:           "~/.kingclaw/workspace",
-				RestrictToWorkspace: true,
-				Provider:            "",
-				Model:               "glm-4.7",
-				MaxTokens:           8192,
-				Temperature:         nil, // nil means use provider default
-				MaxToolIterations:   20,
+				Workspace:              "~/.kingclaw/workspace",
+				RestrictToWorkspace:    true,
+				Provider:               "",
+				Model:                  "glm-4.7",
+				MaxTokens:              8192,
+				Temperature:            nil, // nil means use provider default
+				MaxToolIterations:      20,
+				FallbackRetryRateLimit: 1,
+				FallbackRetryTimeout:   1,
+				FallbackRetryAuth:      0,
+				FallbackRetryBilling:   0,
+				SummaryTriggerPercent:  75,
+				SummaryRetainMessages:  6,
+				ToolRetryBudget:        1,
+				ToolRetryDelayMS:       120,
 			},
+		},
+		Strategy: StrategyConfig{
+			Profile: "docker",
 		},
 		Bindings: []AgentBinding{},
 		Session: SessionConfig{

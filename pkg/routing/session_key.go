@@ -50,7 +50,7 @@ func BuildAgentPeerSessionKey(params SessionKeyParams) string {
 	if peer == nil {
 		peer = &RoutePeer{Kind: "direct"}
 	}
-	peerKind := strings.TrimSpace(peer.Kind)
+	peerKind := normalizePeerKind(peer.Kind)
 	if peerKind == "" {
 		peerKind = "direct"
 	}
@@ -142,6 +142,18 @@ func normalizeChannel(channel string) string {
 		return "unknown"
 	}
 	return c
+}
+
+func normalizePeerKind(kind string) string {
+	k := strings.TrimSpace(strings.ToLower(kind))
+	switch k {
+	case "direct", "group", "channel":
+		return k
+	case "":
+		return "direct"
+	default:
+		return "direct"
+	}
 }
 
 func resolveLinkedPeerID(identityLinks map[string][]string, channel, peerID string) string {

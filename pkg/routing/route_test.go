@@ -295,3 +295,55 @@ func TestResolveRoute_NoDefaultUsesFirst(t *testing.T) {
 		t.Errorf("AgentID = %q, want 'alpha' (first in list)", route.AgentID)
 	}
 }
+
+func TestResolveRoute_ParentPeerMatch_UsesParentSessionKey(t *testing.T) {
+	agents := []config.AgentConfig{
+		{ID: "main", Default: true},
+		{ID: "support"},
+	}
+	bindings := []config.AgentBinding{
+		{
+			AgentID: "support",
+			Match: config.BindingMatch{
+				Channel:   "telegram",
+				AccountID: "*",
+				Peer:      &config.PeerMatch{Kind: "direct", ID: "parent-user"},
+			},
+		},
+	}
+	cfg := testConfig(agents, bindings)
+	r := NewRouteResolver(cfg)
+
+	route := r.ResolveRoute(RouteInput{
+		Channel:    "telegram",
+		Peer:       nil,
+		ParentPeer: &RoutePeer{Kind: "direct", ID: "parent-user"},
+	})
+
+	if route.AgentID != "support" {
+		t.Errorf("AgentID = %q, want 'support'", route.AgentID)
+	}
+	if route.MatchedBy != "binding.peer.parent" {
+		t.Errorf("MatchedBy = %q, want 'binding.peer.parent'", route.MatchedBy)
+	}
+	if route.SessionKey != "agent:support:direct:parent-user" {
+		t.Errorf("SessionKey = %q, want %q", route.SessionKey, "agent:support:direct:parent-user")
+	}
+}
+
+func TestResolveRoute_Default_ParentPeerAsSessionFallback(t *testing.T) {
+	cfg := testConfig(nil, nil)
+	r := NewRouteResolver(cfg)
+
+	route := r.ResolveRoute(RouteInput{
+		Channel:    "telegram",
+		ParentPeer: &RoutePeer{Kind: "direct", ID: "Parent-User"},
+	})
+
+	if route.AgentID != DefaultAgentID {
+		t.Errorf("AgentID = %q, want %q", route.AgentID, DefaultAgentID)
+	}
+	if route.SessionKey != "agent:main:direct:parent-user" {
+		t.Errorf("SessionKey = %q, want %q", route.SessionKey, "agent:main:direct:parent-user")
+	}
+}

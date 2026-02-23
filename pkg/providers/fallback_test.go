@@ -40,6 +40,70 @@ func TestFallback_SingleCandidate_Success(t *testing.T) {
 	}
 }
 
+func TestFallback_RetryBudget_RateLimitSameCandidate(t *testing.T) {
+	ct := NewCooldownTracker()
+	fc := NewFallbackChain(ct)
+	fc.SetRetryBudget(FailoverRateLimit, 1)
+
+	candidates := []FallbackCandidate{makeCandidate("openai", "gpt-4")}
+	attempts := 0
+	run := func(ctx context.Context, provider, model string) (*LLMResponse, error) {
+		attempts++
+		if attempts == 1 {
+			return nil, errors.New("rate limit exceeded")
+		}
+		return &LLMResponse{Content: "ok-after-retry", FinishReason: "stop"}, nil
+	}
+
+	result, err := fc.Execute(context.Background(), candidates, run)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if result.Response == nil || result.Response.Content != "ok-after-retry" {
+		t.Fatalf("unexpected response: %#v", result.Response)
+	}
+	if len(result.Attempts) != 1 {
+		t.Fatalf("attempt trace len = %d, want 1 failed attempt before retry success", len(result.Attempts))
+	}
+	if result.Attempts[0].RetryBudget != 1 {
+		t.Fatalf("retry budget = %d, want 1", result.Attempts[0].RetryBudget)
+	}
+}
+
+func TestFallback_RetryBudget_ExhaustThenFallback(t *testing.T) {
+	ct := NewCooldownTracker()
+	fc := NewFallbackChain(ct)
+	fc.SetRetryBudget(FailoverTimeout, 1)
+
+	candidates := []FallbackCandidate{
+		makeCandidate("openai", "gpt-4"),
+		makeCandidate("anthropic", "claude"),
+	}
+
+	openAIAttempts := 0
+	run := func(ctx context.Context, provider, model string) (*LLMResponse, error) {
+		if provider == "openai" {
+			openAIAttempts++
+			return nil, context.DeadlineExceeded
+		}
+		return &LLMResponse{Content: "fallback-ok", FinishReason: "stop"}, nil
+	}
+
+	result, err := fc.Execute(context.Background(), candidates, run)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if openAIAttempts != 2 {
+		t.Fatalf("openai attempts = %d, want 2 (initial + 1 retry)", openAIAttempts)
+	}
+	if result.Provider != "anthropic" {
+		t.Fatalf("provider = %s, want anthropic", result.Provider)
+	}
+}
+
 func TestFallback_SecondCandidateSuccess(t *testing.T) {
 	ct := NewCooldownTracker()
 	fc := NewFallbackChain(ct)

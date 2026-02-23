@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 
 	"github.com/caarlos0/env/v11"
@@ -48,6 +49,7 @@ func (f *FlexibleStringSlice) UnmarshalJSON(data []byte) error {
 
 type Config struct {
 	Agents    AgentsConfig    `json:"agents"`
+	Strategy  StrategyConfig  `json:"strategy,omitempty"`
 	Bindings  []AgentBinding  `json:"bindings,omitempty"`
 	Session   SessionConfig   `json:"session,omitempty"`
 	Channels  ChannelsConfig  `json:"channels"`
@@ -87,6 +89,10 @@ func (c Config) MarshalJSON() ([]byte, error) {
 type AgentsConfig struct {
 	Defaults AgentDefaults `json:"defaults"`
 	List     []AgentConfig `json:"list,omitempty"`
+}
+
+type StrategyConfig struct {
+	Profile string `json:"profile,omitempty" env:"KINGCLAW_STRATEGY_PROFILE"`
 }
 
 // AgentModelConfig supports both string and structured model config.
@@ -167,16 +173,24 @@ type SessionConfig struct {
 }
 
 type AgentDefaults struct {
-	Workspace           string   `json:"workspace"                       env:"KINGCLAW_AGENTS_DEFAULTS_WORKSPACE"`
-	RestrictToWorkspace bool     `json:"restrict_to_workspace"           env:"KINGCLAW_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE"`
-	Provider            string   `json:"provider"                        env:"KINGCLAW_AGENTS_DEFAULTS_PROVIDER"`
-	Model               string   `json:"model"                           env:"KINGCLAW_AGENTS_DEFAULTS_MODEL"`
-	ModelFallbacks      []string `json:"model_fallbacks,omitempty"`
-	ImageModel          string   `json:"image_model,omitempty"           env:"KINGCLAW_AGENTS_DEFAULTS_IMAGE_MODEL"`
-	ImageModelFallbacks []string `json:"image_model_fallbacks,omitempty"`
-	MaxTokens           int      `json:"max_tokens"                      env:"KINGCLAW_AGENTS_DEFAULTS_MAX_TOKENS"`
-	Temperature         *float64 `json:"temperature,omitempty"           env:"KINGCLAW_AGENTS_DEFAULTS_TEMPERATURE"`
-	MaxToolIterations   int      `json:"max_tool_iterations"             env:"KINGCLAW_AGENTS_DEFAULTS_MAX_TOOL_ITERATIONS"`
+	Workspace              string   `json:"workspace"                       env:"KINGCLAW_AGENTS_DEFAULTS_WORKSPACE"`
+	RestrictToWorkspace    bool     `json:"restrict_to_workspace"           env:"KINGCLAW_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE"`
+	Provider               string   `json:"provider"                        env:"KINGCLAW_AGENTS_DEFAULTS_PROVIDER"`
+	Model                  string   `json:"model"                           env:"KINGCLAW_AGENTS_DEFAULTS_MODEL"`
+	ModelFallbacks         []string `json:"model_fallbacks,omitempty"`
+	ImageModel             string   `json:"image_model,omitempty"           env:"KINGCLAW_AGENTS_DEFAULTS_IMAGE_MODEL"`
+	ImageModelFallbacks    []string `json:"image_model_fallbacks,omitempty"`
+	MaxTokens              int      `json:"max_tokens"                      env:"KINGCLAW_AGENTS_DEFAULTS_MAX_TOKENS"`
+	Temperature            *float64 `json:"temperature,omitempty"           env:"KINGCLAW_AGENTS_DEFAULTS_TEMPERATURE"`
+	MaxToolIterations      int      `json:"max_tool_iterations"             env:"KINGCLAW_AGENTS_DEFAULTS_MAX_TOOL_ITERATIONS"`
+	FallbackRetryRateLimit int      `json:"fallback_retry_rate_limit"       env:"KINGCLAW_AGENTS_DEFAULTS_FALLBACK_RETRY_RATE_LIMIT"`
+	FallbackRetryTimeout   int      `json:"fallback_retry_timeout"          env:"KINGCLAW_AGENTS_DEFAULTS_FALLBACK_RETRY_TIMEOUT"`
+	FallbackRetryAuth      int      `json:"fallback_retry_auth,omitempty"   env:"KINGCLAW_AGENTS_DEFAULTS_FALLBACK_RETRY_AUTH"`
+	FallbackRetryBilling   int      `json:"fallback_retry_billing,omitempty" env:"KINGCLAW_AGENTS_DEFAULTS_FALLBACK_RETRY_BILLING"`
+	SummaryTriggerPercent  int      `json:"summary_trigger_percent,omitempty" env:"KINGCLAW_AGENTS_DEFAULTS_SUMMARY_TRIGGER_PERCENT"`
+	SummaryRetainMessages  int      `json:"summary_retain_messages,omitempty" env:"KINGCLAW_AGENTS_DEFAULTS_SUMMARY_RETAIN_MESSAGES"`
+	ToolRetryBudget        int      `json:"tool_retry_budget,omitempty"       env:"KINGCLAW_AGENTS_DEFAULTS_TOOL_RETRY_BUDGET"`
+	ToolRetryDelayMS       int      `json:"tool_retry_delay_ms,omitempty"     env:"KINGCLAW_AGENTS_DEFAULTS_TOOL_RETRY_DELAY_MS"`
 }
 
 type ChannelsConfig struct {
@@ -478,21 +492,98 @@ type ClawHubRegistryConfig struct {
 	MaxResponseSize int    `json:"max_response_size" env:"KINGCLAW_SKILLS_REGISTRIES_CLAWHUB_MAX_RESPONSE_SIZE"`
 }
 
+type strategyPreset struct {
+	FallbackRetryRateLimit int
+	FallbackRetryTimeout   int
+	FallbackRetryAuth      int
+	FallbackRetryBilling   int
+	SummaryTriggerPercent  int
+	SummaryRetainMessages  int
+	ToolRetryBudget        int
+	ToolRetryDelayMS       int
+}
+
+func lookupStrategyPreset(profile string) (strategyPreset, bool) {
+	switch strings.ToLower(strings.TrimSpace(profile)) {
+	case "", "none", "custom":
+		return strategyPreset{}, false
+	case "dev":
+		return strategyPreset{
+			FallbackRetryRateLimit: 0,
+			FallbackRetryTimeout:   0,
+			FallbackRetryAuth:      0,
+			FallbackRetryBilling:   0,
+			SummaryTriggerPercent:  85,
+			SummaryRetainMessages:  8,
+			ToolRetryBudget:        0,
+			ToolRetryDelayMS:       0,
+		}, true
+	case "docker":
+		return strategyPreset{
+			FallbackRetryRateLimit: 1,
+			FallbackRetryTimeout:   1,
+			FallbackRetryAuth:      0,
+			FallbackRetryBilling:   0,
+			SummaryTriggerPercent:  75,
+			SummaryRetainMessages:  6,
+			ToolRetryBudget:        1,
+			ToolRetryDelayMS:       120,
+		}, true
+	case "prod":
+		return strategyPreset{
+			FallbackRetryRateLimit: 1,
+			FallbackRetryTimeout:   2,
+			FallbackRetryAuth:      0,
+			FallbackRetryBilling:   0,
+			SummaryTriggerPercent:  70,
+			SummaryRetainMessages:  8,
+			ToolRetryBudget:        2,
+			ToolRetryDelayMS:       180,
+		}, true
+	default:
+		return strategyPreset{}, false
+	}
+}
+
+func applyStrategyProfile(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	preset, ok := lookupStrategyPreset(cfg.Strategy.Profile)
+	if !ok {
+		return
+	}
+	cfg.Agents.Defaults.FallbackRetryRateLimit = preset.FallbackRetryRateLimit
+	cfg.Agents.Defaults.FallbackRetryTimeout = preset.FallbackRetryTimeout
+	cfg.Agents.Defaults.FallbackRetryAuth = preset.FallbackRetryAuth
+	cfg.Agents.Defaults.FallbackRetryBilling = preset.FallbackRetryBilling
+	cfg.Agents.Defaults.SummaryTriggerPercent = preset.SummaryTriggerPercent
+	cfg.Agents.Defaults.SummaryRetainMessages = preset.SummaryRetainMessages
+	cfg.Agents.Defaults.ToolRetryBudget = preset.ToolRetryBudget
+	cfg.Agents.Defaults.ToolRetryDelayMS = preset.ToolRetryDelayMS
+}
+
 func LoadConfig(path string) (*Config, error) {
 	cfg := DefaultConfig()
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return cfg, nil
+		if !os.IsNotExist(err) {
+			return nil, err
 		}
+	} else {
+		if err := json.Unmarshal(data, cfg); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := env.Parse(cfg); err != nil {
 		return nil, err
 	}
 
-	if err := json.Unmarshal(data, cfg); err != nil {
-		return nil, err
-	}
-
+	// Apply optional strategy profile for environment-specific defaults.
+	// A second env parse lets explicit concrete env vars override profile-resolved values.
+	applyStrategyProfile(cfg)
 	if err := env.Parse(cfg); err != nil {
 		return nil, err
 	}

@@ -115,6 +115,19 @@ func TestBuildAgentPeerSessionKey_IdentityLink(t *testing.T) {
 	}
 }
 
+func TestBuildAgentPeerSessionKey_PeerKindCaseInsensitive(t *testing.T) {
+	got := BuildAgentPeerSessionKey(SessionKeyParams{
+		AgentID: "main",
+		Channel: "telegram",
+		Peer:    &RoutePeer{Kind: "DIRECT", ID: "User123"},
+		DMScope: DMScopePerPeer,
+	})
+	want := "agent:main:direct:user123"
+	if got != want {
+		t.Errorf("CaseInsensitivePeerKind = %q, want %q", got, want)
+	}
+}
+
 func TestParseAgentSessionKey_Valid(t *testing.T) {
 	parsed := ParseAgentSessionKey("agent:sales:telegram:direct:user123")
 	if parsed == nil {

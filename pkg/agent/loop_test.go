@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -738,5 +739,230 @@ func TestAgentLoop_Run_PublishesFinalWhenDifferentFromMessageTool(t *testing.T) 
 		}
 	case <-time.After(1 * time.Second):
 		t.Fatal("Run did not stop in time")
+	}
+}
+
+func TestFormatFallbackAttemptChain(t *testing.T) {
+	attempts := []providers.FallbackAttempt{
+		{
+			Provider: "openai",
+			Model:    "gpt-5.2",
+			Reason:   providers.FailoverRateLimit,
+			Duration: 1250 * time.Millisecond,
+			Error:    fmt.Errorf("429 Too Many Requests"),
+		},
+		{
+			Provider: "anthropic",
+			Model:    "claude-sonnet-4.6",
+			Skipped:  true,
+			Reason:   providers.FailoverRateLimit,
+			Error:    fmt.Errorf("provider anthropic in cooldown"),
+		},
+	}
+
+	got := formatFallbackAttemptChain(attempts)
+	if got == "" {
+		t.Fatal("expected non-empty fallback trace")
+	}
+	if !strings.Contains(got, "#1 openai/gpt-5.2 status=failed") {
+		t.Fatalf("missing first attempt info: %s", got)
+	}
+	if !strings.Contains(got, "reason=rate_limit") {
+		t.Fatalf("missing reason info: %s", got)
+	}
+	if !strings.Contains(got, "duration=1.25s") {
+		t.Fatalf("missing duration info: %s", got)
+	}
+	if !strings.Contains(got, "#2 anthropic/claude-sonnet-4.6 status=skipped") {
+		t.Fatalf("missing skipped attempt info: %s", got)
+	}
+}
+
+func TestNormalizeLevelHelpers(t *testing.T) {
+	if got := normalizeThinkingLevel("HIGH"); got != "high" {
+		t.Fatalf("normalizeThinkingLevel(high) = %q", got)
+	}
+	if got := normalizeThinkingLevel("off"); got != "" {
+		t.Fatalf("normalizeThinkingLevel(off) = %q, want empty", got)
+	}
+	if got := normalizeThinkingLevel("bad"); got != "" {
+		t.Fatalf("normalizeThinkingLevel(bad) = %q, want empty", got)
+	}
+
+	if got := normalizeVerboseLevel("FULL"); got != "full" {
+		t.Fatalf("normalizeVerboseLevel(full) = %q", got)
+	}
+	if got := normalizeVerboseLevel("off"); got != "" {
+		t.Fatalf("normalizeVerboseLevel(off) = %q, want empty", got)
+	}
+	if got := normalizeVerboseLevel("bad"); got != "" {
+		t.Fatalf("normalizeVerboseLevel(bad) = %q, want empty", got)
+	}
+}
+
+func TestSummaryStrategyHelpers_Clamp(t *testing.T) {
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:             t.TempDir(),
+				Model:                 "test-model",
+				MaxTokens:             4096,
+				MaxToolIterations:     10,
+				SummaryTriggerPercent: 10,
+				SummaryRetainMessages: 1,
+			},
+		},
+	}
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &simpleMockProvider{response: "ok"})
+	if got := al.summaryTriggerPercent(); got != 40 {
+		t.Fatalf("summaryTriggerPercent() = %d, want 40", got)
+	}
+	if got := al.summaryRetainMessages(); got != 2 {
+		t.Fatalf("summaryRetainMessages() = %d, want 2", got)
+	}
+}
+
+func TestForceCompression_RetainsTailAndWritesSummaryNote(t *testing.T) {
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:              t.TempDir(),
+				Model:                  "test-model",
+				MaxTokens:              4096,
+				MaxToolIterations:      10,
+				SummaryRetainMessages:  3,
+				SummaryTriggerPercent:  75,
+				FallbackRetryRateLimit: 1,
+			},
+		},
+	}
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &simpleMockProvider{response: "ok"})
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("default agent not found")
+	}
+	key := "test:compress"
+	agent.Sessions.GetOrCreate(key)
+	history := []providers.Message{
+		{Role: "user", Content: "m1"},
+		{Role: "assistant", Content: "m2"},
+		{Role: "user", Content: "m3"},
+		{Role: "assistant", Content: "m4"},
+		{Role: "user", Content: "m5"},
+		{Role: "assistant", Content: "m6"},
+	}
+	agent.Sessions.SetHistory(key, history)
+	agent.Sessions.SetSummary(key, "existing summary")
+
+	al.forceCompression(agent, key)
+
+	got := agent.Sessions.GetHistory(key)
+	if len(got) != 3 {
+		t.Fatalf("history len = %d, want 3", len(got))
+	}
+	if got[0].Content != "m4" || got[1].Content != "m5" || got[2].Content != "m6" {
+		t.Fatalf("unexpected retained history: %#v", got)
+	}
+
+	summary := agent.Sessions.GetSummary(key)
+	if !strings.Contains(summary, "existing summary") {
+		t.Fatalf("summary missing previous content: %q", summary)
+	}
+	if !strings.Contains(summary, "Emergency compression dropped 3 older messages") {
+		t.Fatalf("summary missing compression note: %q", summary)
+	}
+}
+
+func TestSummarizeSession_UsesConfiguredRetainWindow(t *testing.T) {
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:              t.TempDir(),
+				Model:                  "test-model",
+				MaxTokens:              4096,
+				MaxToolIterations:      10,
+				SummaryRetainMessages:  2,
+				SummaryTriggerPercent:  75,
+				FallbackRetryRateLimit: 1,
+			},
+		},
+	}
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &simpleMockProvider{response: "summarized"})
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("default agent not found")
+	}
+	key := "test:summarize"
+	agent.Sessions.GetOrCreate(key)
+	history := []providers.Message{
+		{Role: "user", Content: "u1"},
+		{Role: "assistant", Content: "a1"},
+		{Role: "user", Content: "u2"},
+		{Role: "assistant", Content: "a2"},
+		{Role: "user", Content: "u3"},
+	}
+	agent.Sessions.SetHistory(key, history)
+
+	al.summarizeSession(agent, key)
+
+	gotHistory := agent.Sessions.GetHistory(key)
+	if len(gotHistory) != 2 {
+		t.Fatalf("history len after summarize = %d, want 2", len(gotHistory))
+	}
+	if gotHistory[0].Content != "a2" || gotHistory[1].Content != "u3" {
+		t.Fatalf("unexpected retained history after summarize: %#v", gotHistory)
+	}
+	if strings.TrimSpace(agent.Sessions.GetSummary(key)) == "" {
+		t.Fatal("expected non-empty summary after summarizeSession")
+	}
+}
+
+func TestEnsureToolReceiptContent_AddsReceiptWhenMissing(t *testing.T) {
+	res := tools.ErrorResult("temporary timeout while calling api")
+	got := ensureToolReceiptContent("web_search", res, res.ForLLM, 1)
+	if !strings.Contains(got, "run_id=") {
+		t.Fatalf("expected synthetic run_id in receipt, got: %s", got)
+	}
+	if !strings.Contains(got, "status=failed") {
+		t.Fatalf("expected failed status, got: %s", got)
+	}
+	if !strings.Contains(got, "error_code=timeout") {
+		t.Fatalf("expected timeout error_code, got: %s", got)
+	}
+}
+
+func TestEnsureToolReceiptContent_PreservesExistingReceipt(t *testing.T) {
+	content := "[exec][run_id=exec-123] status=completed exit_code=0"
+	got := ensureToolReceiptContent("shell", tools.NewToolResult(content), content, 0)
+	if got != content {
+		t.Fatalf("expected original receipt unchanged, got: %s", got)
+	}
+}
+
+func TestToolGuardrailHelpers(t *testing.T) {
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         t.TempDir(),
+				Model:             "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+				ToolRetryBudget:   7,
+				ToolRetryDelayMS:  9000,
+			},
+		},
+	}
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &simpleMockProvider{response: "ok"})
+	if got := al.toolRetryBudget(); got != 3 {
+		t.Fatalf("toolRetryBudget clamp = %d, want 3", got)
+	}
+	if got := al.toolRetryDelay(); got != 2*time.Second {
+		t.Fatalf("toolRetryDelay clamp = %v, want 2s", got)
+	}
+	if !isRetriableToolError(tools.ErrorResult("429 too many requests")) {
+		t.Fatal("expected retriable tool error for 429")
+	}
+	if isRetriableToolError(tools.ErrorResult("invalid args: path is required")) {
+		t.Fatal("did not expect retriable tool error for invalid args")
 	}
 }

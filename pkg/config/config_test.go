@@ -233,6 +233,37 @@ func TestDefaultConfig_MaxToolIterations(t *testing.T) {
 	}
 }
 
+func TestDefaultConfig_FallbackRetryBudgets(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Strategy.Profile != "docker" {
+		t.Fatalf("Strategy.Profile = %q, want docker", cfg.Strategy.Profile)
+	}
+	if cfg.Agents.Defaults.FallbackRetryRateLimit != 1 {
+		t.Fatalf("FallbackRetryRateLimit = %d, want 1", cfg.Agents.Defaults.FallbackRetryRateLimit)
+	}
+	if cfg.Agents.Defaults.FallbackRetryTimeout != 1 {
+		t.Fatalf("FallbackRetryTimeout = %d, want 1", cfg.Agents.Defaults.FallbackRetryTimeout)
+	}
+	if cfg.Agents.Defaults.FallbackRetryAuth != 0 {
+		t.Fatalf("FallbackRetryAuth = %d, want 0", cfg.Agents.Defaults.FallbackRetryAuth)
+	}
+	if cfg.Agents.Defaults.FallbackRetryBilling != 0 {
+		t.Fatalf("FallbackRetryBilling = %d, want 0", cfg.Agents.Defaults.FallbackRetryBilling)
+	}
+	if cfg.Agents.Defaults.SummaryTriggerPercent != 75 {
+		t.Fatalf("SummaryTriggerPercent = %d, want 75", cfg.Agents.Defaults.SummaryTriggerPercent)
+	}
+	if cfg.Agents.Defaults.SummaryRetainMessages != 6 {
+		t.Fatalf("SummaryRetainMessages = %d, want 6", cfg.Agents.Defaults.SummaryRetainMessages)
+	}
+	if cfg.Agents.Defaults.ToolRetryBudget != 1 {
+		t.Fatalf("ToolRetryBudget = %d, want 1", cfg.Agents.Defaults.ToolRetryBudget)
+	}
+	if cfg.Agents.Defaults.ToolRetryDelayMS != 120 {
+		t.Fatalf("ToolRetryDelayMS = %d, want 120", cfg.Agents.Defaults.ToolRetryDelayMS)
+	}
+}
+
 // TestDefaultConfig_Temperature verifies temperature has default value
 func TestDefaultConfig_Temperature(t *testing.T) {
 	cfg := DefaultConfig()
@@ -390,5 +421,67 @@ func TestLoadConfig_OpenAIWebSearchCanBeDisabled(t *testing.T) {
 	}
 	if cfg.Providers.OpenAI.WebSearch {
 		t.Fatal("OpenAI codex web search should be false when disabled in config file")
+	}
+}
+
+func TestLoadConfig_StrategyProfileFromFile(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"strategy":{"profile":"prod"}}`), 0o600); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error: %v", err)
+	}
+	if cfg.Strategy.Profile != "prod" {
+		t.Fatalf("Strategy.Profile = %q, want %q", cfg.Strategy.Profile, "prod")
+	}
+	if cfg.Agents.Defaults.ToolRetryBudget != 2 {
+		t.Fatalf("ToolRetryBudget = %d, want 2 for prod profile", cfg.Agents.Defaults.ToolRetryBudget)
+	}
+	if cfg.Agents.Defaults.SummaryTriggerPercent != 70 {
+		t.Fatalf("SummaryTriggerPercent = %d, want 70 for prod profile", cfg.Agents.Defaults.SummaryTriggerPercent)
+	}
+}
+
+func TestLoadConfig_StrategyProfileFromEnvWithoutFile(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "missing.json")
+	t.Setenv("KINGCLAW_STRATEGY_PROFILE", "dev")
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error: %v", err)
+	}
+	if cfg.Strategy.Profile != "dev" {
+		t.Fatalf("Strategy.Profile = %q, want %q", cfg.Strategy.Profile, "dev")
+	}
+	if cfg.Agents.Defaults.ToolRetryBudget != 0 {
+		t.Fatalf("ToolRetryBudget = %d, want 0 for dev profile", cfg.Agents.Defaults.ToolRetryBudget)
+	}
+	if cfg.Agents.Defaults.FallbackRetryRateLimit != 0 {
+		t.Fatalf("FallbackRetryRateLimit = %d, want 0 for dev profile", cfg.Agents.Defaults.FallbackRetryRateLimit)
+	}
+}
+
+func TestLoadConfig_StrategyProfileAllowsConcreteEnvOverride(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"strategy":{"profile":"prod"}}`), 0o600); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+	t.Setenv("KINGCLAW_AGENTS_DEFAULTS_TOOL_RETRY_BUDGET", "0")
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error: %v", err)
+	}
+	if cfg.Strategy.Profile != "prod" {
+		t.Fatalf("Strategy.Profile = %q, want prod", cfg.Strategy.Profile)
+	}
+	if cfg.Agents.Defaults.ToolRetryBudget != 0 {
+		t.Fatalf("ToolRetryBudget = %d, want 0 from env override", cfg.Agents.Defaults.ToolRetryBudget)
 	}
 }

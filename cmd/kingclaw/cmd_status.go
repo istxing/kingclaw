@@ -4,10 +4,17 @@
 package main
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
 
 	"github.com/istxing/kingclaw/pkg/auth"
+	"github.com/istxing/kingclaw/pkg/runs"
 )
 
 func statusCmd() {
@@ -15,6 +22,16 @@ func statusCmd() {
 	if err != nil {
 		fmt.Printf("Error loading config: %v\n", err)
 		return
+	}
+	if len(os.Args) >= 3 {
+		switch os.Args[2] {
+		case "runs":
+			statusRunsCmd(cfg.WorkspacePath())
+			return
+		case "errors":
+			statusErrorsCmd(cfg.WorkspacePath())
+			return
+		}
 	}
 
 	configPath := getConfigPath()
@@ -42,6 +59,18 @@ func statusCmd() {
 
 	if _, err := os.Stat(configPath); err == nil {
 		fmt.Printf("Model: %s\n", cfg.Agents.Defaults.Model)
+		fmt.Printf("Strategy profile: %s\n", safeStatusValue(cfg.Strategy.Profile))
+		fmt.Printf(
+			"Strategy knobs: fallback(rate=%d timeout=%d auth=%d billing=%d) summary(trigger=%d retain=%d) tool(retry=%d delay_ms=%d)\n",
+			cfg.Agents.Defaults.FallbackRetryRateLimit,
+			cfg.Agents.Defaults.FallbackRetryTimeout,
+			cfg.Agents.Defaults.FallbackRetryAuth,
+			cfg.Agents.Defaults.FallbackRetryBilling,
+			cfg.Agents.Defaults.SummaryTriggerPercent,
+			cfg.Agents.Defaults.SummaryRetainMessages,
+			cfg.Agents.Defaults.ToolRetryBudget,
+			cfg.Agents.Defaults.ToolRetryDelayMS,
+		)
 
 		hasOpenRouter := cfg.Providers.OpenRouter.APIKey != ""
 		hasAnthropic := cfg.Providers.Anthropic.APIKey != ""
@@ -99,4 +128,128 @@ func statusCmd() {
 			}
 		}
 	}
+	fmt.Println("\nTip: `kingclaw status runs` for recent activity, `kingclaw status errors` for failed tasks.")
+}
+
+func statusRunsCmd(workspace string) {
+	svc := runs.NewService(workspace)
+	entries, err := svc.List(20)
+	if err != nil {
+		fmt.Printf("Error reading runs: %v\n", err)
+		return
+	}
+	if len(entries) == 0 {
+		fmt.Println("No runs found.")
+		return
+	}
+	fmt.Println("Aggregated runs (latest 20):")
+	for _, e := range entries {
+		ts := time.UnixMilli(e.TS).Format("2006-01-02 15:04:05")
+		errMsg := e.ErrorMessage
+		if errMsg == "" {
+			errMsg = e.Error
+		}
+		if errMsg == "" {
+			errMsg = "-"
+		}
+		fmt.Printf("[%s] run_id=%s status=%s source=%s model=%s thinking=%s verbose=%s duration=%dms error=%s\n",
+			ts,
+			e.RunID,
+			e.Status,
+			safeStatusValue(e.Source),
+			safeStatusValue(e.Model),
+			safeStatusValue(e.Thinking),
+			safeStatusValue(e.Verbose),
+			e.DurationMS,
+			errMsg,
+		)
+	}
+}
+
+type channelFailureEntry struct {
+	TS       int64  `json:"ts"`
+	Channel  string `json:"channel"`
+	ChatID   string `json:"chat_id"`
+	Content  string `json:"content"`
+	Error    string `json:"error"`
+	Attempts int    `json:"attempts"`
+}
+
+func statusErrorsCmd(workspace string) {
+	svc := runs.NewService(workspace)
+	runErrs, err := svc.Errors(20)
+	if err != nil {
+		fmt.Printf("Error reading run errors: %v\n", err)
+		return
+	}
+	channelErrs := readChannelFailures(filepath.Join(workspace, "channels", "outbound_failures.jsonl"), 20)
+
+	type row struct {
+		TS      int64
+		Source  string
+		Summary string
+	}
+	var rows []row
+	for _, e := range runErrs {
+		msg := e.ErrorMessage
+		if msg == "" {
+			msg = e.Error
+		}
+		rows = append(rows, row{
+			TS:      e.TS,
+			Source:  "runs",
+			Summary: fmt.Sprintf("run_id=%s status=%s source=%s error_code=%s error=%s", e.RunID, e.Status, safeStatusValue(e.Source), safeStatusValue(e.ErrorCode), safeStatusValue(msg)),
+		})
+	}
+	for _, e := range channelErrs {
+		rows = append(rows, row{
+			TS:      e.TS,
+			Source:  "channels",
+			Summary: fmt.Sprintf("channel=%s chat_id=%s attempts=%d error=%s", e.Channel, e.ChatID, e.Attempts, e.Error),
+		})
+	}
+	if len(rows) == 0 {
+		fmt.Println("No failed tasks found.")
+		return
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].TS > rows[j].TS })
+	if len(rows) > 20 {
+		rows = rows[:20]
+	}
+	fmt.Println("Recent failed tasks (latest 20):")
+	for _, r := range rows {
+		ts := time.UnixMilli(r.TS).Format("2006-01-02 15:04:05")
+		fmt.Printf("[%s] [%s] %s\n", ts, r.Source, r.Summary)
+	}
+}
+
+func readChannelFailures(path string, limit int) []channelFailureEntry {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	var all []channelFailureEntry
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var e channelFailureEntry
+		if json.Unmarshal([]byte(line), &e) == nil {
+			all = append(all, e)
+		}
+	}
+	if len(all) <= limit {
+		return all
+	}
+	return all[len(all)-limit:]
+}
+
+func safeStatusValue(v string) string {
+	if strings.TrimSpace(v) == "" {
+		return "-"
+	}
+	return v
 }

@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,6 +24,7 @@ import (
 	"github.com/istxing/kingclaw/pkg/logger"
 	"github.com/istxing/kingclaw/pkg/providers"
 	"github.com/istxing/kingclaw/pkg/routing"
+	"github.com/istxing/kingclaw/pkg/runs"
 	"github.com/istxing/kingclaw/pkg/skills"
 	"github.com/istxing/kingclaw/pkg/state"
 	"github.com/istxing/kingclaw/pkg/tools"
@@ -36,8 +38,19 @@ type AgentLoop struct {
 	state          *state.Manager
 	running        atomic.Bool
 	summarizing    sync.Map
+	summaryNotice  sync.Map
+	recentActions  sync.Map
 	fallback       *providers.FallbackChain
 	channelManager *channels.Manager
+}
+
+type actionReceipt struct {
+	RunID     string
+	Tool      string
+	Status    string
+	ErrorCode string
+	Error     string
+	TS        int64
 }
 
 // processOptions configures how a message is processed
@@ -50,6 +63,13 @@ type processOptions struct {
 	EnableSummary   bool   // Whether to trigger summarization
 	SendResponse    bool   // Whether to send response via bus
 	NoHistory       bool   // If true, don't load session history (for heartbeat)
+	ThinkingLevel   string // Session-level thinking override
+	VerboseLevel    string // Session-level verbosity override
+}
+
+type llmIterationMeta struct {
+	SelectedModel    string
+	FallbackAttempts string
 }
 
 func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers.LLMProvider) *AgentLoop {
@@ -61,6 +81,10 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 	// Set up shared fallback chain
 	cooldown := providers.NewCooldownTracker()
 	fallbackChain := providers.NewFallbackChain(cooldown)
+	fallbackChain.SetRetryBudget(providers.FailoverRateLimit, max(0, cfg.Agents.Defaults.FallbackRetryRateLimit))
+	fallbackChain.SetRetryBudget(providers.FailoverTimeout, max(0, cfg.Agents.Defaults.FallbackRetryTimeout))
+	fallbackChain.SetRetryBudget(providers.FailoverAuth, max(0, cfg.Agents.Defaults.FallbackRetryAuth))
+	fallbackChain.SetRetryBudget(providers.FailoverBilling, max(0, cfg.Agents.Defaults.FallbackRetryBilling))
 
 	// Create state manager using default agent's workspace for channel recording
 	defaultAgent := registry.GetDefaultAgent()
@@ -112,7 +136,7 @@ func registerSharedTools(
 		agent.Tools.Register(tools.NewSPITool())
 
 		// Message tool
-		messageTool := tools.NewMessageTool()
+		messageTool := tools.NewMessageTool(agent.Workspace)
 		messageTool.SetSendCallback(func(channel, chatID, content string) error {
 			msgBus.PublishOutbound(bus.OutboundMessage{
 				Channel: channel,
@@ -387,6 +411,38 @@ func (al *AgentLoop) processSystemMessage(ctx context.Context, msg bus.InboundMe
 
 // runAgentLoop is the core message processing logic.
 func (al *AgentLoop) runAgentLoop(ctx context.Context, agent *AgentInstance, opts processOptions) (string, error) {
+	runID := fmt.Sprintf("agent-%d", time.Now().UnixNano())
+	startAt := time.Now()
+
+	appendAgentRun := func(status, errCode, errMsg, selectedModel, attempts, thinking, verbose, summary string) {
+		if strings.TrimSpace(al.cfg.WorkspacePath()) == "" {
+			return
+		}
+		_ = runs.NewService(al.cfg.WorkspacePath()).Append(runs.Entry{
+			RunID:        runID,
+			Status:       status,
+			TS:           startAt.UnixMilli(),
+			DurationMS:   time.Since(startAt).Milliseconds(),
+			Model:        strings.TrimSpace(selectedModel),
+			Attempts:     strings.TrimSpace(attempts),
+			Thinking:     strings.TrimSpace(thinking),
+			Verbose:      strings.TrimSpace(verbose),
+			ErrorCode:    errCode,
+			ErrorMessage: errMsg,
+			Error:        errMsg,
+			Source:       "agent_llm",
+			Summary:      summary,
+		})
+	}
+
+	// Resolve per-session overrides if not explicitly provided.
+	if opts.ThinkingLevel == "" {
+		opts.ThinkingLevel = strings.TrimSpace(agent.Sessions.GetThinkingLevel(opts.SessionKey))
+	}
+	if opts.VerboseLevel == "" {
+		opts.VerboseLevel = strings.TrimSpace(agent.Sessions.GetVerboseLevel(opts.SessionKey))
+	}
+
 	// 0. Record last channel for heartbeat notifications (skip internal channels)
 	if opts.Channel != "" && opts.ChatID != "" {
 		// Don't record internal channels (cli, system, subagent)
@@ -411,7 +467,7 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, agent *AgentInstance, opt
 	messages := agent.ContextBuilder.BuildMessages(
 		history,
 		summary,
-		opts.UserMessage,
+		al.injectActionContext(opts.SessionKey, opts.UserMessage),
 		nil,
 		opts.Channel,
 		opts.ChatID,
@@ -421,8 +477,18 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, agent *AgentInstance, opt
 	agent.Sessions.AddMessage(opts.SessionKey, "user", opts.UserMessage)
 
 	// 4. Run LLM iteration loop
-	finalContent, iteration, err := al.runLLMIteration(ctx, agent, messages, opts)
+	finalContent, iteration, llmMeta, err := al.runLLMIteration(ctx, agent, messages, opts)
 	if err != nil {
+		appendAgentRun(
+			"failed",
+			"llm_failed",
+			err.Error(),
+			llmMeta.SelectedModel,
+			llmMeta.FallbackAttempts,
+			opts.ThinkingLevel,
+			opts.VerboseLevel,
+			fmt.Sprintf("agent=%s status=failed model=%s", agent.ID, llmMeta.SelectedModel),
+		)
 		return "", err
 	}
 
@@ -433,6 +499,8 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, agent *AgentInstance, opt
 	if finalContent == "" {
 		finalContent = opts.DefaultResponse
 	}
+	finalContent = al.applyExecutionResponseProtocol(opts.SessionKey, opts.UserMessage, finalContent)
+	finalContent = enforceInferenceLabel(finalContent)
 
 	// 6. Save final assistant message to session
 	agent.Sessions.AddMessage(opts.SessionKey, "assistant", finalContent)
@@ -459,8 +527,21 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, agent *AgentInstance, opt
 			"agent_id":     agent.ID,
 			"session_key":  opts.SessionKey,
 			"iterations":   iteration,
+			"thinking":     opts.ThinkingLevel,
+			"verbose":      opts.VerboseLevel,
 			"final_length": len(finalContent),
 		})
+
+	appendAgentRun(
+		"completed",
+		"",
+		"",
+		llmMeta.SelectedModel,
+		llmMeta.FallbackAttempts,
+		opts.ThinkingLevel,
+		opts.VerboseLevel,
+		fmt.Sprintf("agent=%s status=completed model=%s", agent.ID, llmMeta.SelectedModel),
+	)
 
 	return finalContent, nil
 }
@@ -471,9 +552,10 @@ func (al *AgentLoop) runLLMIteration(
 	agent *AgentInstance,
 	messages []providers.Message,
 	opts processOptions,
-) (string, int, error) {
+) (string, int, llmIterationMeta, error) {
 	iteration := 0
 	var finalContent string
+	meta := llmIterationMeta{SelectedModel: agent.Model}
 
 	for iteration < agent.MaxIterations {
 		iteration++
@@ -489,15 +571,19 @@ func (al *AgentLoop) runLLMIteration(
 		providerToolDefs := agent.Tools.ToProviderDefs()
 
 		// Log LLM request details
+		candidateRefs := fallbackCandidateRefs(agent.Candidates)
 		logger.DebugCF("agent", "LLM request",
 			map[string]any{
 				"agent_id":          agent.ID,
 				"iteration":         iteration,
 				"model":             agent.Model,
+				"candidates":        candidateRefs,
 				"messages_count":    len(messages),
 				"tools_count":       len(providerToolDefs),
 				"max_tokens":        agent.MaxTokens,
 				"temperature":       agent.Temperature,
+				"thinking":          opts.ThinkingLevel,
+				"verbose":           opts.VerboseLevel,
 				"system_prompt_len": len(messages[0].Content),
 			})
 
@@ -512,31 +598,54 @@ func (al *AgentLoop) runLLMIteration(
 		// Call LLM with fallback chain if candidates are configured.
 		var response *providers.LLMResponse
 		var err error
+		modelUsed := agent.Model
+		fallbackTrace := ""
 
 		callLLM := func() (*providers.LLMResponse, error) {
+			llmOpts := map[string]any{
+				"max_tokens":  agent.MaxTokens,
+				"temperature": agent.Temperature,
+			}
+			if opts.ThinkingLevel != "" {
+				llmOpts["thinking_level"] = opts.ThinkingLevel
+			}
+			if opts.VerboseLevel != "" {
+				llmOpts["verbose_level"] = opts.VerboseLevel
+			}
 			if len(agent.Candidates) > 1 && al.fallback != nil {
 				fbResult, fbErr := al.fallback.Execute(ctx, agent.Candidates,
 					func(ctx context.Context, provider, model string) (*providers.LLMResponse, error) {
-						return agent.Provider.Chat(ctx, messages, providerToolDefs, model, map[string]any{
-							"max_tokens":  agent.MaxTokens,
-							"temperature": agent.Temperature,
-						})
+						return agent.Provider.Chat(ctx, messages, providerToolDefs, model, llmOpts)
 					},
 				)
 				if fbErr != nil {
+					if exhausted, ok := fbErr.(*providers.FallbackExhaustedError); ok {
+						trace := formatFallbackAttemptChain(exhausted.Attempts)
+						logger.WarnCF("agent", "LLM fallback exhausted", map[string]any{
+							"agent_id":  agent.ID,
+							"iteration": iteration,
+							"attempts":  trace,
+						})
+					}
 					return nil, fbErr
 				}
-				if fbResult.Provider != "" && len(fbResult.Attempts) > 0 {
-					logger.InfoCF("agent", fmt.Sprintf("Fallback: succeeded with %s/%s after %d attempts",
-						fbResult.Provider, fbResult.Model, len(fbResult.Attempts)+1),
-						map[string]any{"agent_id": agent.ID, "iteration": iteration})
+				fallbackTrace = formatFallbackAttemptChain(fbResult.Attempts)
+				if fbResult.Provider != "" {
+					modelUsed = fmt.Sprintf("%s/%s", fbResult.Provider, fbResult.Model)
+				}
+				if fallbackTrace != "" {
+					logger.InfoCF("agent", "LLM fallback attempts", map[string]any{
+						"agent_id":    agent.ID,
+						"iteration":   iteration,
+						"selected":    modelUsed,
+						"attempts":    fallbackTrace,
+						"candidates":  candidateRefs,
+						"attempt_cnt": len(fbResult.Attempts),
+					})
 				}
 				return fbResult.Response, nil
 			}
-			return agent.Provider.Chat(ctx, messages, providerToolDefs, agent.Model, map[string]any{
-				"max_tokens":  agent.MaxTokens,
-				"temperature": agent.Temperature,
-			})
+			return agent.Provider.Chat(ctx, messages, providerToolDefs, agent.Model, llmOpts)
 		}
 
 		// Retry loop for context/token errors
@@ -580,13 +689,17 @@ func (al *AgentLoop) runLLMIteration(
 		}
 
 		if err != nil {
+			meta.SelectedModel = modelUsed
+			meta.FallbackAttempts = fallbackTrace
 			logger.ErrorCF("agent", "LLM call failed",
 				map[string]any{
 					"agent_id":  agent.ID,
 					"iteration": iteration,
+					"model":     modelUsed,
+					"attempts":  fallbackTrace,
 					"error":     err.Error(),
 				})
-			return "", iteration, fmt.Errorf("LLM call failed after retries: %w", err)
+			return "", iteration, meta, fmt.Errorf("LLM call failed after retries: %w", err)
 		}
 
 		// Check if no tool calls - we're done
@@ -596,10 +709,14 @@ func (al *AgentLoop) runLLMIteration(
 				map[string]any{
 					"agent_id":      agent.ID,
 					"iteration":     iteration,
+					"model":         modelUsed,
+					"attempts":      fallbackTrace,
 					"content_chars": len(finalContent),
 				})
 			break
 		}
+		meta.SelectedModel = modelUsed
+		meta.FallbackAttempts = fallbackTrace
 
 		normalizedToolCalls := make([]providers.ToolCall, 0, len(response.ToolCalls))
 		for _, tc := range response.ToolCalls {
@@ -686,6 +803,41 @@ func (al *AgentLoop) runLLMIteration(
 				opts.ChatID,
 				asyncCallback,
 			)
+			retries := 0
+			retryBudget := al.toolRetryBudget()
+			for toolResult != nil && toolResult.IsError && retries < retryBudget && isRetriableToolError(toolResult) {
+				retries++
+				logger.WarnCF("agent", "Tool execution retry",
+					map[string]any{
+						"agent_id":     agent.ID,
+						"tool":         tc.Name,
+						"retry":        retries,
+						"retry_budget": retryBudget,
+						"error":        safeToolErrorMessage(toolResult),
+					})
+				abortRetry := false
+				if d := al.toolRetryDelay(); d > 0 {
+					select {
+					case <-ctx.Done():
+						abortRetry = true
+					case <-time.After(d):
+					}
+				}
+				if abortRetry {
+					break
+				}
+				toolResult = agent.Tools.ExecuteWithContext(
+					ctx,
+					tc.Name,
+					tc.Arguments,
+					opts.Channel,
+					opts.ChatID,
+					asyncCallback,
+				)
+			}
+			if toolResult == nil {
+				toolResult = tools.ErrorResult("tool returned nil result").WithError(fmt.Errorf("nil tool result"))
+			}
 
 			// Send ForUser content to user immediately if not Silent
 			if !toolResult.Silent && toolResult.ForUser != "" && opts.SendResponse {
@@ -706,6 +858,7 @@ func (al *AgentLoop) runLLMIteration(
 			if contentForLLM == "" && toolResult.Err != nil {
 				contentForLLM = toolResult.Err.Error()
 			}
+			contentForLLM = ensureToolReceiptContent(tc.Name, toolResult, contentForLLM, retries)
 
 			toolResultMsg := providers.Message{
 				Role:       "tool",
@@ -713,13 +866,62 @@ func (al *AgentLoop) runLLMIteration(
 				ToolCallID: tc.ID,
 			}
 			messages = append(messages, toolResultMsg)
+			al.captureActionReceipt(opts.SessionKey, tc.Name, contentForLLM)
 
 			// Save tool result message to session
 			agent.Sessions.AddFullMessage(opts.SessionKey, toolResultMsg)
 		}
 	}
 
-	return finalContent, iteration, nil
+	return finalContent, iteration, meta, nil
+}
+
+func fallbackCandidateRefs(candidates []providers.FallbackCandidate) []string {
+	if len(candidates) == 0 {
+		return nil
+	}
+	refs := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		refs = append(refs, fmt.Sprintf("%s/%s", c.Provider, c.Model))
+	}
+	return refs
+}
+
+func formatFallbackAttemptChain(attempts []providers.FallbackAttempt) string {
+	if len(attempts) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(attempts))
+	for i, a := range attempts {
+		status := "failed"
+		if a.Skipped {
+			status = "skipped"
+		}
+		reason := "-"
+		if a.Reason != "" {
+			reason = string(a.Reason)
+		}
+		duration := "-"
+		if a.Duration > 0 {
+			duration = a.Duration.Round(time.Millisecond).String()
+		}
+		errMsg := "-"
+		if a.Error != nil {
+			errMsg = strings.TrimSpace(a.Error.Error())
+			if errMsg == "" {
+				errMsg = "-"
+			}
+		}
+		retryMeta := ""
+		if a.RetryOrdinal > 0 || a.RetryBudget > 0 || a.RetryConsumed > 0 {
+			retryMeta = fmt.Sprintf(" retry=%d budget=%d consumed=%d", a.RetryOrdinal, a.RetryBudget, a.RetryConsumed)
+		}
+		parts = append(parts, fmt.Sprintf(
+			"#%d %s/%s status=%s reason=%s duration=%s error=%s%s",
+			i+1, a.Provider, a.Model, status, reason, duration, errMsg, retryMeta,
+		))
+	}
+	return strings.Join(parts, " | ")
 }
 
 // updateToolContexts updates the context for tools that need channel/chatID info.
@@ -746,76 +948,74 @@ func (al *AgentLoop) updateToolContexts(agent *AgentInstance, channel, chatID st
 func (al *AgentLoop) maybeSummarize(agent *AgentInstance, sessionKey, channel, chatID string) {
 	newHistory := agent.Sessions.GetHistory(sessionKey)
 	tokenEstimate := al.estimateTokens(newHistory)
-	threshold := agent.ContextWindow * 75 / 100
+	triggerPercent := al.summaryTriggerPercent()
+	threshold := agent.ContextWindow * triggerPercent / 100
 
-	if len(newHistory) > 20 || tokenEstimate > threshold {
+	if tokenEstimate > threshold {
 		summarizeKey := agent.ID + ":" + sessionKey
 		if _, loading := al.summarizing.LoadOrStore(summarizeKey, true); !loading {
 			go func() {
 				defer al.summarizing.Delete(summarizeKey)
-				if !constants.IsInternalChannel(channel) {
-					al.bus.PublishOutbound(bus.OutboundMessage{
-						Channel: channel,
-						ChatID:  chatID,
-						Content: "Memory threshold reached. Optimizing conversation history...",
-					})
-				}
+				al.logSummarizationEvent(summarizeKey, channel, chatID, tokenEstimate, threshold, len(newHistory))
 				al.summarizeSession(agent, sessionKey)
 			}()
 		}
 	}
 }
 
+// logSummarizationEvent logs summarization trigger with cooldown to avoid log spam.
+func (al *AgentLoop) logSummarizationEvent(
+	summarizeKey, channel, chatID string,
+	tokenEstimate, threshold, historyLen int,
+) {
+	// Keep the UX quiet on user-facing channels; only log internally.
+	if constants.IsInternalChannel(channel) {
+		return
+	}
+
+	const cooldown = 30 * time.Minute
+	now := time.Now()
+
+	if raw, ok := al.summaryNotice.Load(summarizeKey); ok {
+		if last, ok := raw.(time.Time); ok && now.Sub(last) < cooldown {
+			return
+		}
+	}
+
+	al.summaryNotice.Store(summarizeKey, now)
+	logger.InfoCF("agent", "Session history summarized",
+		map[string]any{
+			"channel":        channel,
+			"chat_id":        chatID,
+			"history_len":    historyLen,
+			"token_estimate": tokenEstimate,
+			"threshold":      threshold,
+		})
+}
+
 // forceCompression aggressively reduces context when the limit is hit.
 // It drops the oldest 50% of messages (keeping system prompt and last user message).
 func (al *AgentLoop) forceCompression(agent *AgentInstance, sessionKey string) {
 	history := agent.Sessions.GetHistory(sessionKey)
-	if len(history) <= 4 {
+	keepLast := al.summaryRetainMessages()
+	if len(history) <= keepLast {
 		return
 	}
 
-	// Keep system prompt (usually [0]) and the very last message (user's trigger)
-	// We want to drop the oldest half of the *conversation*
-	// Assuming [0] is system, [1:] is conversation
-	conversation := history[1 : len(history)-1]
-	if len(conversation) == 0 {
-		return
-	}
-
-	// Helper to find the mid-point of the conversation
-	mid := len(conversation) / 2
-
-	// New history structure:
-	// 1. System Prompt (with compression note appended)
-	// 2. Second half of conversation
-	// 3. Last message
-
-	droppedCount := mid
-	keptConversation := conversation[mid:]
-
-	newHistory := make([]providers.Message, 0)
-
-	// Append compression note to the original system prompt instead of adding a new system message
-	// This avoids having two consecutive system messages which some APIs (like Zhipu) reject
-	compressionNote := fmt.Sprintf(
-		"\n\n[System Note: Emergency compression dropped %d oldest messages due to context limit]",
-		droppedCount,
-	)
-	enhancedSystemPrompt := history[0]
-	enhancedSystemPrompt.Content = enhancedSystemPrompt.Content + compressionNote
-	newHistory = append(newHistory, enhancedSystemPrompt)
-
-	newHistory = append(newHistory, keptConversation...)
-	newHistory = append(newHistory, history[len(history)-1]) // Last message
+	droppedCount := len(history) - keepLast
+	newHistory := make([]providers.Message, keepLast)
+	copy(newHistory, history[len(history)-keepLast:])
 
 	// Update session
 	agent.Sessions.SetHistory(sessionKey, newHistory)
+	al.appendCompressionSummaryNote(agent, sessionKey, droppedCount)
 	agent.Sessions.Save(sessionKey)
 
 	logger.WarnCF("agent", "Forced compression executed", map[string]any{
 		"session_key":  sessionKey,
 		"dropped_msgs": droppedCount,
 		"new_count":    len(newHistory),
+		"keep_last":    keepLast,
 	})
 }
 
@@ -905,13 +1105,14 @@ func (al *AgentLoop) summarizeSession(agent *AgentInstance, sessionKey string) {
 
 	history := agent.Sessions.GetHistory(sessionKey)
 	summary := agent.Sessions.GetSummary(sessionKey)
+	keepLast := al.summaryRetainMessages()
 
-	// Keep last 4 messages for continuity
-	if len(history) <= 4 {
+	// Keep recent messages for continuity.
+	if len(history) <= keepLast {
 		return
 	}
 
-	toSummarize := history[:len(history)-4]
+	toSummarize := history[:len(history)-keepLast]
 
 	// Oversized Message Guard
 	maxMessageTokens := agent.ContextWindow / 2
@@ -974,8 +1175,172 @@ func (al *AgentLoop) summarizeSession(agent *AgentInstance, sessionKey string) {
 
 	if finalSummary != "" {
 		agent.Sessions.SetSummary(sessionKey, finalSummary)
-		agent.Sessions.TruncateHistory(sessionKey, 4)
+		agent.Sessions.TruncateHistory(sessionKey, keepLast)
 		agent.Sessions.Save(sessionKey)
+	}
+}
+
+func (al *AgentLoop) summaryTriggerPercent() int {
+	p := al.cfg.Agents.Defaults.SummaryTriggerPercent
+	if p <= 0 {
+		p = 75
+	}
+	if p < 40 {
+		return 40
+	}
+	if p > 95 {
+		return 95
+	}
+	return p
+}
+
+func (al *AgentLoop) summaryRetainMessages() int {
+	n := al.cfg.Agents.Defaults.SummaryRetainMessages
+	if n <= 0 {
+		n = 6
+	}
+	if n < 2 {
+		return 2
+	}
+	if n > 32 {
+		return 32
+	}
+	return n
+}
+
+func (al *AgentLoop) appendCompressionSummaryNote(agent *AgentInstance, sessionKey string, droppedCount int) {
+	if droppedCount <= 0 {
+		return
+	}
+	const summaryMaxChars = 6000
+	note := fmt.Sprintf("[Compression] Emergency compression dropped %d older messages.", droppedCount)
+	current := strings.TrimSpace(agent.Sessions.GetSummary(sessionKey))
+	next := note
+	if current != "" {
+		next = current + "\n" + note
+	}
+	if len(next) > summaryMaxChars {
+		next = next[len(next)-summaryMaxChars:]
+	}
+	agent.Sessions.SetSummary(sessionKey, next)
+}
+
+func (al *AgentLoop) toolRetryBudget() int {
+	b := al.cfg.Agents.Defaults.ToolRetryBudget
+	if b < 0 {
+		b = 0
+	}
+	if b > 3 {
+		b = 3
+	}
+	return b
+}
+
+func (al *AgentLoop) toolRetryDelay() time.Duration {
+	ms := al.cfg.Agents.Defaults.ToolRetryDelayMS
+	if ms < 0 {
+		ms = 0
+	}
+	if ms > 2000 {
+		ms = 2000
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+func isRetriableToolError(result *tools.ToolResult) bool {
+	if result == nil || !result.IsError {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(safeToolErrorMessage(result)))
+	if msg == "" {
+		return false
+	}
+	hints := []string{
+		"timeout",
+		"timed out",
+		"deadline exceeded",
+		"temporar",
+		"try again",
+		"rate limit",
+		"too many requests",
+		"429",
+		"connection reset",
+		"connection refused",
+		"network",
+		"unavailable",
+		"econnreset",
+	}
+	for _, h := range hints {
+		if strings.Contains(msg, h) {
+			return true
+		}
+	}
+	return false
+}
+
+func safeToolErrorMessage(result *tools.ToolResult) string {
+	if result == nil {
+		return ""
+	}
+	if strings.TrimSpace(result.ForLLM) != "" {
+		return strings.TrimSpace(result.ForLLM)
+	}
+	if result.Err != nil {
+		return strings.TrimSpace(result.Err.Error())
+	}
+	return ""
+}
+
+func ensureToolReceiptContent(toolName string, result *tools.ToolResult, content string, retries int) string {
+	raw := strings.TrimSpace(content)
+	if runID, status, _, _ := parseToolReceipt(raw); runID != "" || status != "" {
+		return raw
+	}
+
+	runID := fmt.Sprintf("tool-%d", time.Now().UnixNano())
+	status := "completed"
+	if result != nil {
+		if result.Async {
+			status = "accepted"
+		}
+		if result.IsError {
+			status = "failed"
+		}
+	}
+	if raw == "" && result != nil && result.Err != nil {
+		raw = strings.TrimSpace(result.Err.Error())
+	}
+	if raw == "" {
+		raw = "-"
+	}
+	raw = strings.ReplaceAll(raw, "\n", " | ")
+
+	if status == "failed" {
+		errCode := classifyToolErrorCode(raw)
+		return fmt.Sprintf("[tool:%s][run_id=%s] status=failed error_code=%s error=%s retries=%d",
+			toolName, runID, errCode, raw, retries)
+	}
+	return fmt.Sprintf("[tool:%s][run_id=%s] status=%s retries=%d result=%s",
+		toolName, runID, status, retries, raw)
+}
+
+func classifyToolErrorCode(msg string) string {
+	lower := strings.ToLower(strings.TrimSpace(msg))
+	switch {
+	case lower == "":
+		return "tool_error"
+	case strings.Contains(lower, "timeout"), strings.Contains(lower, "deadline exceeded"):
+		return "timeout"
+	case strings.Contains(lower, "rate limit"), strings.Contains(lower, "too many requests"), strings.Contains(lower, "429"):
+		return "rate_limit"
+	case strings.Contains(lower, "not found"):
+		return "not_found"
+	case strings.Contains(lower, "permission"), strings.Contains(lower, "denied"), strings.Contains(lower, "outside workspace"):
+		return "permission_denied"
+	case strings.Contains(lower, "invalid"), strings.Contains(lower, "required"):
+		return "invalid_args"
+	default:
+		return "tool_error"
 	}
 }
 
@@ -1112,9 +1477,396 @@ func (al *AgentLoop) handleCommand(ctx context.Context, msg bus.InboundMessage) 
 		default:
 			return fmt.Sprintf("Unknown switch target: %s", target), true
 		}
+	case "/thinking":
+		defaultAgent := al.registry.GetDefaultAgent()
+		if defaultAgent == nil {
+			return "No default agent configured", true
+		}
+		sessionKey := strings.TrimSpace(msg.SessionKey)
+		if sessionKey == "" {
+			sessionKey = "cli:default"
+		}
+		if len(args) == 0 {
+			current := strings.TrimSpace(defaultAgent.Sessions.GetThinkingLevel(sessionKey))
+			if current == "" {
+				current = "off"
+			}
+			return fmt.Sprintf("Thinking level (%s): %s", sessionKey, current), true
+		}
+		level := normalizeThinkingLevel(args[0])
+		if level == "" {
+			return "Usage: /thinking [off|minimal|low|medium|high]", true
+		}
+		defaultAgent.Sessions.SetThinkingLevel(sessionKey, level)
+		_ = defaultAgent.Sessions.Save(sessionKey)
+		return fmt.Sprintf("Thinking level set (%s): %s", sessionKey, level), true
+	case "/verbose":
+		defaultAgent := al.registry.GetDefaultAgent()
+		if defaultAgent == nil {
+			return "No default agent configured", true
+		}
+		sessionKey := strings.TrimSpace(msg.SessionKey)
+		if sessionKey == "" {
+			sessionKey = "cli:default"
+		}
+		if len(args) == 0 {
+			current := strings.TrimSpace(defaultAgent.Sessions.GetVerboseLevel(sessionKey))
+			if current == "" {
+				current = "off"
+			}
+			return fmt.Sprintf("Verbose level (%s): %s", sessionKey, current), true
+		}
+		level := normalizeVerboseLevel(args[0])
+		if level == "" {
+			return "Usage: /verbose [off|on|full]", true
+		}
+		defaultAgent.Sessions.SetVerboseLevel(sessionKey, level)
+		_ = defaultAgent.Sessions.Save(sessionKey)
+		return fmt.Sprintf("Verbose level set (%s): %s", sessionKey, level), true
+	case "/runs":
+		limit := 20
+		if len(args) > 0 {
+			var parsed int
+			if _, err := fmt.Sscanf(args[0], "%d", &parsed); err == nil && parsed > 0 {
+				limit = parsed
+			}
+		}
+		svc := runs.NewService(al.cfg.WorkspacePath())
+		entries, err := svc.List(limit)
+		if err != nil {
+			return fmt.Sprintf("runs query failed: %v", err), true
+		}
+		if len(entries) == 0 {
+			return "No runs found.", true
+		}
+		lines := make([]string, 0, len(entries)+1)
+		lines = append(lines, fmt.Sprintf("Recent runs (%d):", len(entries)))
+		for _, e := range entries {
+			lines = append(lines, fmt.Sprintf(
+				"- run_id=%s job_id=%s status=%s ts=%d duration=%dms source=%s error=%s",
+				e.RunID, safeQueryValue(e.JobID), e.Status, e.TS, e.DurationMS, safeQueryValue(e.Source), safeQueryValue(runErrorMessage(e)),
+			))
+		}
+		return strings.Join(lines, "\n"), true
+	case "/status":
+		if len(args) < 1 {
+			return "Usage: /status <run_id>", true
+		}
+		svc := runs.NewService(al.cfg.WorkspacePath())
+		entry, found, err := svc.Get(args[0])
+		if err != nil {
+			return fmt.Sprintf("status query failed: %v", err), true
+		}
+		if !found || entry == nil {
+			return fmt.Sprintf("Run not found: %s", args[0]), true
+		}
+		return fmt.Sprintf(
+			"run_id=%s\njob_id=%s\nstatus=%s\nts=%d\nduration=%dms\nsource=%s\nerror_code=%s\nerror=%s",
+			entry.RunID,
+			safeQueryValue(entry.JobID),
+			entry.Status,
+			entry.TS,
+			entry.DurationMS,
+			safeQueryValue(entry.Source),
+			safeQueryValue(entry.ErrorCode),
+			safeQueryValue(runErrorMessage(*entry)),
+		), true
+	case "/errors":
+		limit := 20
+		if len(args) > 0 {
+			var parsed int
+			if _, err := fmt.Sscanf(args[0], "%d", &parsed); err == nil && parsed > 0 {
+				limit = parsed
+			}
+		}
+		svc := runs.NewService(al.cfg.WorkspacePath())
+		entries, err := svc.Errors(limit)
+		if err != nil {
+			return fmt.Sprintf("errors query failed: %v", err), true
+		}
+		if len(entries) == 0 {
+			return "No failed runs found.", true
+		}
+		lines := make([]string, 0, len(entries)+1)
+		lines = append(lines, fmt.Sprintf("Recent failed runs (%d):", len(entries)))
+		for _, e := range entries {
+			lines = append(lines, fmt.Sprintf(
+				"- run_id=%s job_id=%s status=%s ts=%d duration=%dms source=%s error_code=%s error=%s",
+				e.RunID,
+				safeQueryValue(e.JobID),
+				e.Status,
+				e.TS,
+				e.DurationMS,
+				safeQueryValue(e.Source),
+				safeQueryValue(e.ErrorCode),
+				safeQueryValue(runErrorMessage(e)),
+			))
+		}
+		return strings.Join(lines, "\n"), true
 	}
 
 	return "", false
+}
+
+func safeQueryValue(v string) string {
+	if strings.TrimSpace(v) == "" {
+		return "-"
+	}
+	return v
+}
+
+func normalizeThinkingLevel(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "off":
+		return ""
+	case "minimal", "low", "medium", "high":
+		return strings.ToLower(strings.TrimSpace(v))
+	default:
+		return ""
+	}
+}
+
+func normalizeVerboseLevel(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "off":
+		return ""
+	case "on", "full":
+		return strings.ToLower(strings.TrimSpace(v))
+	default:
+		return ""
+	}
+}
+
+func runErrorMessage(e runs.Entry) string {
+	if strings.TrimSpace(e.ErrorMessage) != "" {
+		return e.ErrorMessage
+	}
+	return e.Error
+}
+
+var runIDPattern = regexp.MustCompile(`run_id[=:]\s*([a-zA-Z0-9._:-]+)`)
+
+func (al *AgentLoop) applyExecutionResponseProtocol(sessionKey, userMessage, content string) string {
+	user := strings.TrimSpace(userMessage)
+	out := strings.TrimSpace(content)
+	if out == "" {
+		return content
+	}
+	if strings.HasPrefix(user, "[System:") {
+		return content
+	}
+	if !isExecutionStatusQuestion(user) {
+		return content
+	}
+	if strings.Contains(out, "结论：") && strings.Contains(out, "证据：") && strings.Contains(out, "下一步：") {
+		return content
+	}
+
+	evidenceFound := hasExecutionEvidence(out)
+	latest, hasLatest := al.latestActionReceipt(sessionKey)
+	conclusion := "未确认完成，正在等待回执。"
+	if evidenceFound {
+		lower := strings.ToLower(out)
+		switch {
+		case strings.Contains(lower, "status=failed"),
+			strings.Contains(lower, "status=error"),
+			strings.Contains(lower, " run failed"),
+			strings.Contains(lower, "执行失败"),
+			strings.Contains(lower, "已确认失败"):
+			conclusion = "已确认失败。"
+		case strings.Contains(lower, "status=completed"),
+			strings.Contains(lower, "status=ok"),
+			strings.Contains(lower, "已执行完成"),
+			strings.Contains(lower, "已确认完成"):
+			conclusion = "已确认完成。"
+		default:
+			conclusion = "已返回执行状态信息。"
+		}
+	}
+	if !evidenceFound && hasLatest {
+		evidenceFound = true
+		switch strings.ToLower(latest.Status) {
+		case "completed", "ok":
+			conclusion = "已确认完成。"
+		case "failed", "error":
+			conclusion = "已确认失败。"
+		case "accepted", "running":
+			conclusion = "未确认完成，正在等待回执。"
+		}
+	}
+
+	evidence := "未找到可验证回执（run_id/状态记录）。"
+	if evidenceFound {
+		evidence = buildEvidenceSummary(out)
+		if hasLatest {
+			evidence = fmt.Sprintf("%s | recent_run_id=%s status=%s error_code=%s error=%s",
+				evidence,
+				safeQueryValue(latest.RunID),
+				safeQueryValue(latest.Status),
+				safeQueryValue(latest.ErrorCode),
+				safeQueryValue(latest.Error),
+			)
+		}
+	}
+
+	next := "继续等待回执，或使用 /runs 和 /status <run_id> 查询最新状态。"
+	switch conclusion {
+	case "已确认完成。":
+		next = "如需复核，使用 /status <run_id> 或 kingclaw runs status <run_id>。"
+	case "已确认失败。":
+		next = "可用 /errors 或 kingclaw runs errors 查看失败原因后重试。"
+	}
+
+	return fmt.Sprintf("结论：%s\n证据：%s\n下一步：%s", conclusion, evidence, next)
+}
+
+func (al *AgentLoop) captureActionReceipt(sessionKey, toolName, content string) {
+	runID, status, errCode, errMsg := parseToolReceipt(content)
+	if runID == "" && status == "" {
+		return
+	}
+	rcpt := actionReceipt{
+		RunID:     runID,
+		Tool:      toolName,
+		Status:    status,
+		ErrorCode: errCode,
+		Error:     errMsg,
+		TS:        time.Now().UnixMilli(),
+	}
+	v, _ := al.recentActions.LoadOrStore(sessionKey, []actionReceipt{})
+	existing, _ := v.([]actionReceipt)
+	existing = append(existing, rcpt)
+	if len(existing) > 20 {
+		existing = existing[len(existing)-20:]
+	}
+	al.recentActions.Store(sessionKey, existing)
+}
+
+func (al *AgentLoop) latestActionReceipt(sessionKey string) (actionReceipt, bool) {
+	v, ok := al.recentActions.Load(sessionKey)
+	if !ok {
+		return actionReceipt{}, false
+	}
+	list, ok := v.([]actionReceipt)
+	if !ok || len(list) == 0 {
+		return actionReceipt{}, false
+	}
+	return list[len(list)-1], true
+}
+
+func (al *AgentLoop) injectActionContext(sessionKey, userMessage string) string {
+	if !isExecutionStatusQuestion(userMessage) {
+		return userMessage
+	}
+	latest, ok := al.latestActionReceipt(sessionKey)
+	if !ok {
+		return userMessage
+	}
+	note := fmt.Sprintf(
+		"[RecentAction]\nrun_id=%s\ntool=%s\nstatus=%s\nerror_code=%s\nerror=%s\n\n",
+		safeQueryValue(latest.RunID),
+		safeQueryValue(latest.Tool),
+		safeQueryValue(latest.Status),
+		safeQueryValue(latest.ErrorCode),
+		safeQueryValue(latest.Error),
+	)
+	return note + userMessage
+}
+
+func parseToolReceipt(content string) (runID, status, errorCode, errMsg string) {
+	if m := runIDPattern.FindStringSubmatch(content); len(m) > 1 {
+		runID = strings.TrimSpace(m[1])
+	}
+	if m := regexp.MustCompile(`status[=:]\s*([a-zA-Z0-9_-]+)`).FindStringSubmatch(content); len(m) > 1 {
+		status = strings.TrimSpace(m[1])
+	}
+	if m := regexp.MustCompile(`error_code[=:]\s*([a-zA-Z0-9_.-]+)`).FindStringSubmatch(content); len(m) > 1 {
+		errorCode = strings.TrimSpace(m[1])
+	}
+	if m := regexp.MustCompile(`error[=:]\s*([^\n]+)`).FindStringSubmatch(content); len(m) > 1 {
+		errMsg = strings.TrimSpace(m[1])
+	}
+	return
+}
+
+func isExecutionStatusQuestion(user string) bool {
+	lower := strings.ToLower(strings.TrimSpace(user))
+	keywords := []string{
+		"执行了吗",
+		"完成了吗",
+		"是否完成",
+		"成功了吗",
+		"失败了吗",
+		"任务状态",
+		"运行状态",
+		"回执",
+		"run_id",
+		"/status",
+		"/runs",
+		"/errors",
+	}
+	for _, k := range keywords {
+		if strings.Contains(lower, k) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasExecutionEvidence(content string) bool {
+	lower := strings.ToLower(content)
+	return runIDPattern.MatchString(content) ||
+		strings.Contains(lower, "status=") ||
+		strings.Contains(lower, "recent runs") ||
+		strings.Contains(lower, "run not found") ||
+		strings.Contains(lower, "no runs found") ||
+		strings.Contains(lower, "error_code=")
+}
+
+func buildEvidenceSummary(content string) string {
+	lines := strings.Split(content, "\n")
+	collected := make([]string, 0, 3)
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		lower := strings.ToLower(line)
+		if runIDPattern.MatchString(line) ||
+			strings.Contains(lower, "status=") ||
+			strings.Contains(lower, "error_code=") ||
+			strings.Contains(lower, "ts=") ||
+			strings.Contains(lower, "duration=") {
+			collected = append(collected, line)
+		}
+		if len(collected) >= 3 {
+			break
+		}
+	}
+	if len(collected) == 0 {
+		if len(content) > 180 {
+			return strings.TrimSpace(content[:180]) + "..."
+		}
+		return strings.TrimSpace(content)
+	}
+	return strings.Join(collected, " | ")
+}
+
+func enforceInferenceLabel(content string) string {
+	lower := strings.ToLower(content)
+	if strings.Contains(lower, "推断") || strings.Contains(lower, "待确认") {
+		return content
+	}
+	uncertainHints := []string{
+		"可能", "也许", "不确定", "猜测", "大概",
+		"might", "maybe", "likely", "uncertain", "not sure",
+	}
+	for _, hint := range uncertainHints {
+		if strings.Contains(lower, hint) {
+			return strings.TrimSpace(content) + "\n\n注：以上包含推断，待确认。"
+		}
+	}
+	return content
 }
 
 // extractPeer extracts the routing peer from inbound message metadata.
