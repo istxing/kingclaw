@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"fmt"
+
+	"github.com/istxing/kingclaw/pkg/runs"
 )
 
 type SpawnTool struct {
@@ -65,9 +67,28 @@ func (t *SpawnTool) SetAllowlistChecker(check func(targetAgentID string) bool) {
 }
 
 func (t *SpawnTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
+	runID := newRunID("subagent")
+	recordFailed := func(code, msg string) {
+		workspace := ""
+		if t.manager != nil {
+			workspace = t.manager.workspace
+		}
+		appendRunLog(workspace, runs.Entry{
+			RunID:        runID,
+			Status:       "failed",
+			ErrorCode:    code,
+			ErrorMessage: msg,
+			Error:        msg,
+			Source:       "subagent",
+		})
+	}
+
 	task, ok := args["task"].(string)
 	if !ok {
-		return ErrorResult("task is required")
+		recordFailed("invalid_args", "task is required")
+		return ErrorResult(
+			fmt.Sprintf("[subagent][run_id=%s] status=failed error_code=invalid_args error=task is required", runID),
+		)
 	}
 
 	label, _ := args["label"].(string)
@@ -76,18 +97,31 @@ func (t *SpawnTool) Execute(ctx context.Context, args map[string]any) *ToolResul
 	// Check allowlist if targeting a specific agent
 	if agentID != "" && t.allowlistCheck != nil {
 		if !t.allowlistCheck(agentID) {
-			return ErrorResult(fmt.Sprintf("not allowed to spawn agent '%s'", agentID))
+			recordFailed("not_allowed", fmt.Sprintf("not allowed to spawn agent '%s'", agentID))
+			return ErrorResult(
+				fmt.Sprintf(
+					"[subagent][run_id=%s] status=failed error_code=not_allowed error=not allowed to spawn agent '%s'",
+					runID,
+					agentID,
+				),
+			)
 		}
 	}
 
 	if t.manager == nil {
-		return ErrorResult("Subagent manager not configured")
+		recordFailed("not_configured", "Subagent manager not configured")
+		return ErrorResult(
+			fmt.Sprintf("[subagent][run_id=%s] status=failed error_code=not_configured error=Subagent manager not configured", runID),
+		)
 	}
 
 	// Pass callback to manager for async completion notification
 	result, err := t.manager.Spawn(ctx, task, label, agentID, t.originChannel, t.originChatID, t.callback)
 	if err != nil {
-		return ErrorResult(fmt.Sprintf("failed to spawn subagent: %v", err))
+		recordFailed("spawn_failed", fmt.Sprintf("failed to spawn subagent: %v", err))
+		return ErrorResult(
+			fmt.Sprintf("[subagent][run_id=%s] status=failed error_code=spawn_failed error=failed to spawn subagent: %v", runID, err),
+		)
 	}
 
 	// Return AsyncResult since the task runs in background

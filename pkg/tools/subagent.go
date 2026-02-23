@@ -8,6 +8,7 @@ import (
 
 	"github.com/istxing/kingclaw/pkg/bus"
 	"github.com/istxing/kingclaw/pkg/providers"
+	"github.com/istxing/kingclaw/pkg/runs"
 )
 
 type SubagentTask struct {
@@ -102,19 +103,27 @@ func (sm *SubagentManager) Spawn(
 		Created:       time.Now().UnixMilli(),
 	}
 	sm.tasks[taskID] = subagentTask
+	appendRunLog(sm.workspace, runs.Entry{
+		RunID:   taskID,
+		Status:  "accepted",
+		TS:      subagentTask.Created,
+		Source:  "subagent",
+		Summary: label,
+	})
 
 	// Start task in background with context cancellation support
 	go sm.runTask(ctx, subagentTask, callback)
 
 	if label != "" {
-		return fmt.Sprintf("Spawned subagent '%s' for task: %s", label, task), nil
+		return fmt.Sprintf("[subagent][run_id=%s] status=accepted label=%s", taskID, label), nil
 	}
-	return fmt.Sprintf("Spawned subagent for task: %s", task), nil
+	return fmt.Sprintf("[subagent][run_id=%s] status=accepted", taskID), nil
 }
 
 func (sm *SubagentManager) runTask(ctx context.Context, task *SubagentTask, callback AsyncCallback) {
 	task.Status = "running"
 	task.Created = time.Now().UnixMilli()
+	startAt := time.Now()
 
 	// Build system prompt for subagent
 	systemPrompt := `You are a subagent. Complete the given task independently and report the result.
@@ -186,12 +195,25 @@ After completing the task, provide a clear summary of what was done.`
 		task.Status = "failed"
 		task.Result = fmt.Sprintf("Error: %v", err)
 		// Check if it was cancelled
+		errorCode := "execution_failed"
 		if ctx.Err() != nil {
 			task.Status = "cancelled"
 			task.Result = "Task cancelled during execution"
+			errorCode = "cancelled"
 		}
+		appendRunLog(sm.workspace, runs.Entry{
+			RunID:        task.ID,
+			Status:       "failed",
+			TS:           task.Created,
+			DurationMS:   time.Since(startAt).Milliseconds(),
+			ErrorCode:    errorCode,
+			ErrorMessage: task.Result,
+			Error:        task.Result,
+			Source:       "subagent",
+			Summary:      task.Label,
+		})
 		result = &ToolResult{
-			ForLLM:  task.Result,
+			ForLLM:  fmt.Sprintf("[subagent][run_id=%s] status=failed error_code=%s error=%s", task.ID, errorCode, task.Result),
 			ForUser: "",
 			Silent:  false,
 			IsError: true,
@@ -201,9 +223,18 @@ After completing the task, provide a clear summary of what was done.`
 	} else {
 		task.Status = "completed"
 		task.Result = loopResult.Content
+		appendRunLog(sm.workspace, runs.Entry{
+			RunID:      task.ID,
+			Status:     "completed",
+			TS:         task.Created,
+			DurationMS: time.Since(startAt).Milliseconds(),
+			Source:     "subagent",
+			Summary:    task.Label,
+		})
 		result = &ToolResult{
 			ForLLM: fmt.Sprintf(
-				"Subagent '%s' completed (iterations: %d): %s",
+				"[subagent][run_id=%s] status=completed label=%s iterations=%d result=%s",
+				task.ID,
 				task.Label,
 				loopResult.Iterations,
 				loopResult.Content,
@@ -217,7 +248,13 @@ After completing the task, provide a clear summary of what was done.`
 
 	// Send announce message back to main agent
 	if sm.bus != nil {
-		announceContent := fmt.Sprintf("Task '%s' completed.\n\nResult:\n%s", task.Label, task.Result)
+		announceContent := fmt.Sprintf(
+			"[subagent][run_id=%s] status=%s\nTask '%s' completed.\n\nResult:\n%s",
+			task.ID,
+			task.Status,
+			task.Label,
+			task.Result,
+		)
 		sm.bus.PublishInbound(bus.InboundMessage{
 			Channel:  "system",
 			SenderID: fmt.Sprintf("subagent:%s", task.ID),
@@ -294,15 +331,41 @@ func (t *SubagentTool) SetContext(channel, chatID string) {
 }
 
 func (t *SubagentTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
+	runID := newRunID("subagent-sync")
+	startAt := time.Now()
+	record := func(status, errCode, errMsg, summary string) {
+		workspace := ""
+		if t.manager != nil {
+			workspace = t.manager.workspace
+		}
+		appendRunLog(workspace, runs.Entry{
+			RunID:        runID,
+			Status:       status,
+			TS:           startAt.UnixMilli(),
+			DurationMS:   time.Since(startAt).Milliseconds(),
+			ErrorCode:    errCode,
+			ErrorMessage: errMsg,
+			Error:        errMsg,
+			Source:       "subagent",
+			Summary:      summary,
+		})
+	}
+
 	task, ok := args["task"].(string)
 	if !ok {
-		return ErrorResult("task is required").WithError(fmt.Errorf("task parameter is required"))
+		record("failed", "invalid_args", "task is required", "invalid args")
+		return ErrorResult(
+			fmt.Sprintf("[subagent][run_id=%s] status=failed error_code=invalid_args error=task is required", runID),
+		).WithError(fmt.Errorf("task parameter is required"))
 	}
 
 	label, _ := args["label"].(string)
 
 	if t.manager == nil {
-		return ErrorResult("Subagent manager not configured").WithError(fmt.Errorf("manager is nil"))
+		record("failed", "not_configured", "Subagent manager not configured", "not configured")
+		return ErrorResult(
+			fmt.Sprintf("[subagent][run_id=%s] status=failed error_code=not_configured error=Subagent manager not configured", runID),
+		).WithError(fmt.Errorf("manager is nil"))
 	}
 
 	// Build messages for subagent
@@ -347,7 +410,10 @@ func (t *SubagentTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 		LLMOptions:    llmOptions,
 	}, messages, t.originChannel, t.originChatID)
 	if err != nil {
-		return ErrorResult(fmt.Sprintf("Subagent execution failed: %v", err)).WithError(err)
+		record("failed", "execution_failed", err.Error(), label)
+		return ErrorResult(
+			fmt.Sprintf("[subagent][run_id=%s] status=failed error_code=execution_failed error=Subagent execution failed: %v", runID, err),
+		).WithError(err)
 	}
 
 	// ForUser: Brief summary for user (truncated if too long)
@@ -362,8 +428,14 @@ func (t *SubagentTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 	if labelStr == "" {
 		labelStr = "(unnamed)"
 	}
-	llmContent := fmt.Sprintf("Subagent task completed:\nLabel: %s\nIterations: %d\nResult: %s",
-		labelStr, loopResult.Iterations, loopResult.Content)
+	llmContent := fmt.Sprintf(
+		"[subagent][run_id=%s] status=completed\nLabel: %s\nIterations: %d\nResult: %s",
+		runID,
+		labelStr,
+		loopResult.Iterations,
+		loopResult.Content,
+	)
+	record("completed", "", "", labelStr)
 
 	return &ToolResult{
 		ForLLM:  llmContent,

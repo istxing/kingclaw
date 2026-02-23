@@ -44,6 +44,8 @@ func cronCmd() {
 		cronEnableCmd(cronStorePath, false)
 	case "disable":
 		cronEnableCmd(cronStorePath, true)
+	case "runs":
+		cronRunsCmd(cronStorePath)
 	default:
 		fmt.Printf("Unknown cron command: %s\n", subcommand)
 		cronHelp()
@@ -57,6 +59,7 @@ func cronHelp() {
 	fmt.Println("  remove <id>       Remove a job by ID")
 	fmt.Println("  enable <id>      Enable a job")
 	fmt.Println("  disable <id>     Disable a job")
+	fmt.Println("  runs <id>        Show recent run logs")
 	fmt.Println()
 	fmt.Println("Add options:")
 	fmt.Println("  -n, --name       Job name")
@@ -66,6 +69,7 @@ func cronHelp() {
 	fmt.Println("  -d, --deliver     Deliver response to channel")
 	fmt.Println("  --to             Recipient for delivery")
 	fmt.Println("  --channel        Channel for delivery")
+	fmt.Println("  --limit          Max entries for runs (default: 20)")
 }
 
 func cronListCmd(storePath string) {
@@ -223,5 +227,57 @@ func cronEnableCmd(storePath string, disable bool) {
 		fmt.Printf("✓ Job '%s' %s\n", job.Name, status)
 	} else {
 		fmt.Printf("✗ Job %s not found\n", jobID)
+	}
+}
+
+func cronRunsCmd(storePath string) {
+	if len(os.Args) < 4 {
+		fmt.Println("Usage: kingclaw cron runs <job_id> [--limit N]")
+		return
+	}
+
+	jobID := os.Args[3]
+	limit := 20
+	args := os.Args[4:]
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--limit" && i+1 < len(args) {
+			var parsed int
+			if _, err := fmt.Sscanf(args[i+1], "%d", &parsed); err == nil && parsed > 0 {
+				limit = parsed
+			}
+			i++
+		}
+	}
+
+	cs := cron.NewCronService(storePath, nil)
+	entries, err := cs.GetRunLog(jobID, limit)
+	if err != nil {
+		fmt.Printf("Error reading run log: %v\n", err)
+		return
+	}
+
+	if len(entries) == 0 {
+		fmt.Println("No run logs found.")
+		return
+	}
+
+	fmt.Printf("\nRun logs for %s (latest %d):\n", jobID, len(entries))
+	fmt.Println("-----------------------------")
+	for _, e := range entries {
+		ts := time.UnixMilli(e.TS).Format("2006-01-02 15:04:05")
+		runID := e.RunID
+		if runID == "" {
+			runID = "-"
+		}
+		fmt.Printf("[%s] run_id=%s status=%s duration=%dms\n", ts, runID, e.Status, e.DurationMS)
+		if e.Error != "" {
+			fmt.Printf("  error: %s\n", e.Error)
+		}
+		if e.Summary != "" {
+			fmt.Printf("  summary: %s\n", e.Summary)
+		}
+		if e.NextRunAtMS != nil {
+			fmt.Printf("  next: %s\n", time.UnixMilli(*e.NextRunAtMS).Format("2006-01-02 15:04:05"))
+		}
 	}
 }

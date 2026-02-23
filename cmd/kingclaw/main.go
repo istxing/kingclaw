@@ -113,6 +113,10 @@ func main() {
 		authCmd()
 	case "cron":
 		cronCmd()
+	case "runs":
+		runsCmd()
+	case "eval":
+		evalCmd()
 	case "skills":
 		if len(os.Args) < 3 {
 			skillsHelp()
@@ -182,6 +186,8 @@ func printHelp() {
 	fmt.Println("  gateway     Start kingclaw gateway")
 	fmt.Println("  status      Show kingclaw status")
 	fmt.Println("  cron        Manage scheduled tasks")
+	fmt.Println("  runs        Query run receipts and errors")
+	fmt.Println("  eval        Run evaluation baseline and compare reports")
 	fmt.Println("  skills      Manage skills (install, list, remove)")
 	fmt.Println("  version     Show version information")
 }

@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
+
+	"github.com/istxing/kingclaw/pkg/runs"
 )
 
 type SendCallback func(channel, chatID, content string) error
@@ -12,6 +15,7 @@ type MessageTool struct {
 	sendCallback   SendCallback
 	defaultChannel string
 	defaultChatID  string
+	workspace      string
 	sentInRound    bool // Tracks whether a message was sent in the current processing round
 	sentMessages   []sentMessage
 }
@@ -22,8 +26,12 @@ type sentMessage struct {
 	content string
 }
 
-func NewMessageTool() *MessageTool {
-	return &MessageTool{}
+func NewMessageTool(workspace ...string) *MessageTool {
+	ws := ""
+	if len(workspace) > 0 {
+		ws = workspace[0]
+	}
+	return &MessageTool{workspace: ws}
 }
 
 func (t *MessageTool) Name() string {
@@ -87,9 +95,29 @@ func (t *MessageTool) SetSendCallback(callback SendCallback) {
 }
 
 func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
+	runID := newRunID("message")
+	startAt := time.Now()
+	record := func(status, errCode, errMsg, summary string) {
+		appendRunLog(t.workspace, runs.Entry{
+			RunID:        runID,
+			Status:       status,
+			TS:           startAt.UnixMilli(),
+			DurationMS:   time.Since(startAt).Milliseconds(),
+			ErrorCode:    errCode,
+			ErrorMessage: errMsg,
+			Error:        errMsg,
+			Source:       "message",
+			Summary:      summary,
+		})
+	}
+
 	content, ok := args["content"].(string)
 	if !ok {
-		return &ToolResult{ForLLM: "content is required", IsError: true}
+		record("failed", "invalid_args", "content is required", "invalid args")
+		return &ToolResult{
+			ForLLM:  fmt.Sprintf("[message][run_id=%s] status=failed error_code=invalid_args error=content is required", runID),
+			IsError: true,
+		}
 	}
 
 	channel, _ := args["channel"].(string)
@@ -103,16 +131,25 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *ToolRes
 	}
 
 	if channel == "" || chatID == "" {
-		return &ToolResult{ForLLM: "No target channel/chat specified", IsError: true}
+		record("failed", "missing_target", "No target channel/chat specified", "missing target")
+		return &ToolResult{
+			ForLLM:  fmt.Sprintf("[message][run_id=%s] status=failed error_code=missing_target error=No target channel/chat specified", runID),
+			IsError: true,
+		}
 	}
 
 	if t.sendCallback == nil {
-		return &ToolResult{ForLLM: "Message sending not configured", IsError: true}
+		record("failed", "not_configured", "Message sending not configured", "not configured")
+		return &ToolResult{
+			ForLLM:  fmt.Sprintf("[message][run_id=%s] status=failed error_code=not_configured error=Message sending not configured", runID),
+			IsError: true,
+		}
 	}
 
 	if err := t.sendCallback(channel, chatID, content); err != nil {
+		record("failed", "send_failed", err.Error(), "send failed")
 		return &ToolResult{
-			ForLLM:  fmt.Sprintf("sending message: %v", err),
+			ForLLM:  fmt.Sprintf("[message][run_id=%s] status=failed error_code=send_failed error=sending message: %v", runID, err),
 			IsError: true,
 			Err:     err,
 		}
@@ -124,9 +161,10 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *ToolRes
 		chatID:  chatID,
 		content: content,
 	})
+	record("completed", "", "", fmt.Sprintf("channel=%s chat_id=%s", channel, chatID))
 	// Silent: user already received the message directly
 	return &ToolResult{
-		ForLLM: fmt.Sprintf("Message sent to %s:%s", channel, chatID),
+		ForLLM: fmt.Sprintf("[message][run_id=%s] status=completed channel=%s chat_id=%s", runID, channel, chatID),
 		Silent: true,
 	}
 }

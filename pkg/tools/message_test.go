@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -43,8 +44,10 @@ func TestMessageTool_Execute_Success(t *testing.T) {
 	}
 
 	// - ForLLM contains send status description
-	if result.ForLLM != "Message sent to test-channel:test-chat-id" {
-		t.Errorf("Expected ForLLM 'Message sent to test-channel:test-chat-id', got '%s'", result.ForLLM)
+	if !strings.Contains(result.ForLLM, "status=completed") ||
+		!strings.Contains(result.ForLLM, "channel=test-channel") ||
+		!strings.Contains(result.ForLLM, "chat_id=test-chat-id") {
+		t.Errorf("Expected ForLLM to contain completion receipt, got '%s'", result.ForLLM)
 	}
 
 	// - ForUser is empty (user already received message directly)
@@ -89,8 +92,10 @@ func TestMessageTool_Execute_WithCustomChannel(t *testing.T) {
 	if !result.Silent {
 		t.Error("Expected Silent=true")
 	}
-	if result.ForLLM != "Message sent to custom-channel:custom-chat-id" {
-		t.Errorf("Expected ForLLM 'Message sent to custom-channel:custom-chat-id', got '%s'", result.ForLLM)
+	if !strings.Contains(result.ForLLM, "status=completed") ||
+		!strings.Contains(result.ForLLM, "channel=custom-channel") ||
+		!strings.Contains(result.ForLLM, "chat_id=custom-chat-id") {
+		t.Errorf("Expected ForLLM to contain completion receipt, got '%s'", result.ForLLM)
 	}
 }
 
@@ -117,9 +122,10 @@ func TestMessageTool_Execute_SendFailure(t *testing.T) {
 	}
 
 	// - ForLLM contains error description
-	expectedErrMsg := "sending message: network error"
-	if result.ForLLM != expectedErrMsg {
-		t.Errorf("Expected ForLLM '%s', got '%s'", expectedErrMsg, result.ForLLM)
+	if !strings.Contains(result.ForLLM, "status=failed") ||
+		!strings.Contains(result.ForLLM, "error_code=send_failed") ||
+		!strings.Contains(result.ForLLM, "network error") {
+		t.Errorf("Expected send failure receipt, got '%s'", result.ForLLM)
 	}
 
 	// - Err field should contain original error
@@ -144,8 +150,8 @@ func TestMessageTool_Execute_MissingContent(t *testing.T) {
 	if !result.IsError {
 		t.Error("Expected IsError=true for missing content")
 	}
-	if result.ForLLM != "content is required" {
-		t.Errorf("Expected ForLLM 'content is required', got '%s'", result.ForLLM)
+	if !strings.Contains(result.ForLLM, "status=failed") || !strings.Contains(result.ForLLM, "content is required") {
+		t.Errorf("Expected missing content receipt, got '%s'", result.ForLLM)
 	}
 }
 
@@ -168,8 +174,8 @@ func TestMessageTool_Execute_NoTargetChannel(t *testing.T) {
 	if !result.IsError {
 		t.Error("Expected IsError=true when no target channel")
 	}
-	if result.ForLLM != "No target channel/chat specified" {
-		t.Errorf("Expected ForLLM 'No target channel/chat specified', got '%s'", result.ForLLM)
+	if !strings.Contains(result.ForLLM, "status=failed") || !strings.Contains(result.ForLLM, "No target channel/chat specified") {
+		t.Errorf("Expected missing target receipt, got '%s'", result.ForLLM)
 	}
 }
 
@@ -189,8 +195,8 @@ func TestMessageTool_Execute_NotConfigured(t *testing.T) {
 	if !result.IsError {
 		t.Error("Expected IsError=true when send callback not configured")
 	}
-	if result.ForLLM != "Message sending not configured" {
-		t.Errorf("Expected ForLLM 'Message sending not configured', got '%s'", result.ForLLM)
+	if !strings.Contains(result.ForLLM, "status=failed") || !strings.Contains(result.ForLLM, "Message sending not configured") {
+		t.Errorf("Expected not configured receipt, got '%s'", result.ForLLM)
 	}
 }
 

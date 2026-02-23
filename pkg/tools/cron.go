@@ -208,7 +208,7 @@ func (t *CronTool) addJob(args map[string]any) *ToolResult {
 		t.cronService.UpdateJob(job)
 	}
 
-	return SilentResult(fmt.Sprintf("Cron job added: %s (id: %s)", job.Name, job.ID))
+	return SilentResult(fmt.Sprintf("Cron job accepted: %s (id: %s)", job.Name, job.ID))
 }
 
 func (t *CronTool) listJobs() *ToolResult {
@@ -267,7 +267,7 @@ func (t *CronTool) enableJob(args map[string]any, enable bool) *ToolResult {
 }
 
 // ExecuteJob executes a cron job through the agent
-func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
+func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) (string, error) {
 	// Get channel/chatID from job payload
 	channel := job.Payload.Channel
 	chatID := job.Payload.To
@@ -280,18 +280,32 @@ func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
 		chatID = "direct"
 	}
 
+	runID := job.State.LastRunID
+	if runID == "" {
+		runID = fmt.Sprintf("adhoc-%d", time.Now().UnixMilli())
+	}
+
 	// Execute command if present
 	if job.Payload.Command != "" {
+		t.msgBus.PublishOutbound(bus.OutboundMessage{
+			Channel: channel,
+			ChatID:  chatID,
+			Content: fmt.Sprintf("[cron][run_id=%s] accepted: executing command job '%s'", runID, job.Name),
+		})
+
 		args := map[string]any{
 			"command": job.Payload.Command,
 		}
 
 		result := t.execTool.Execute(ctx, args)
 		var output string
+		var summary string
 		if result.IsError {
-			output = fmt.Sprintf("Error executing scheduled command: %s", result.ForLLM)
+			output = fmt.Sprintf("[cron][run_id=%s] status=error\njob=%s\ncommand=%s\nerror=%s", runID, job.Name, job.Payload.Command, result.ForLLM)
+			summary = fmt.Sprintf("run_id=%s status=error", runID)
 		} else {
-			output = fmt.Sprintf("Scheduled command '%s' executed:\n%s", job.Payload.Command, result.ForLLM)
+			output = fmt.Sprintf("[cron][run_id=%s] status=ok\njob=%s\ncommand=%s\noutput:\n%s", runID, job.Name, job.Payload.Command, result.ForLLM)
+			summary = fmt.Sprintf("run_id=%s status=ok", runID)
 		}
 
 		t.msgBus.PublishOutbound(bus.OutboundMessage{
@@ -299,7 +313,10 @@ func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
 			ChatID:  chatID,
 			Content: output,
 		})
-		return "ok"
+		if result.IsError {
+			return summary, fmt.Errorf("scheduled command failed: %s", result.ForLLM)
+		}
+		return summary, nil
 	}
 
 	// If deliver=true, send message directly without agent processing
@@ -307,10 +324,16 @@ func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
 		t.msgBus.PublishOutbound(bus.OutboundMessage{
 			Channel: channel,
 			ChatID:  chatID,
-			Content: job.Payload.Message,
+			Content: fmt.Sprintf("[cron][run_id=%s] status=ok\njob=%s\nmessage=%s", runID, job.Name, job.Payload.Message),
 		})
-		return "ok"
+		return fmt.Sprintf("run_id=%s status=ok", runID), nil
 	}
+
+	t.msgBus.PublishOutbound(bus.OutboundMessage{
+		Channel: channel,
+		ChatID:  chatID,
+		Content: fmt.Sprintf("[cron][run_id=%s] accepted: executing agent job '%s'", runID, job.Name),
+	})
 
 	// For deliver=false, process through agent (for complex tasks)
 	sessionKey := fmt.Sprintf("cron-%s", job.ID)
@@ -324,10 +347,15 @@ func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
 		chatID,
 	)
 	if err != nil {
-		return fmt.Sprintf("Error: %v", err)
+		t.msgBus.PublishOutbound(bus.OutboundMessage{
+			Channel: channel,
+			ChatID:  chatID,
+			Content: fmt.Sprintf("[cron][run_id=%s] status=error\njob=%s\nerror=%v", runID, job.Name, err),
+		})
+		return fmt.Sprintf("run_id=%s status=error", runID), err
 	}
 
 	// Response is automatically sent via MessageBus by AgentLoop
 	_ = response // Will be sent by AgentLoop
-	return "ok"
+	return fmt.Sprintf("run_id=%s status=ok", runID), nil
 }

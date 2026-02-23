@@ -1,0 +1,26 @@
+[
+  {
+    "case_id": "exec_status_unknown",
+    "user_message": "执行了吗",
+    "llm_output": "我不太确定",
+    "must_contain": ["结论：", "证据：", "下一步：", "未确认完成，正在等待回执"]
+  },
+  {
+    "case_id": "exec_status_completed",
+    "user_message": "执行了吗",
+    "llm_output": "run_id=exec-1\nstatus=completed\nduration=5ms",
+    "must_contain": ["结论：已确认完成。", "run_id=exec-1", "status=completed"]
+  },
+  {
+    "case_id": "exec_status_failed",
+    "user_message": "执行了吗",
+    "llm_output": "run_id=exec-2\nstatus=failed\nerror_code=command_failed\nerror=exit 1",
+    "must_contain": ["结论：已确认失败。", "error_code=command_failed"]
+  },
+  {
+    "case_id": "non_exec_question",
+    "user_message": "介绍一下项目",
+    "llm_output": "这是项目介绍。",
+    "must_contain": ["这是项目介绍。"]
+  }
+]

@@ -1,6 +1,7 @@
 package cron
 
 import (
+	"bufio"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -34,6 +35,7 @@ type CronPayload struct {
 type CronJobState struct {
 	NextRunAtMS *int64 `json:"nextRunAtMs,omitempty"`
 	LastRunAtMS *int64 `json:"lastRunAtMs,omitempty"`
+	LastRunID   string `json:"lastRunId,omitempty"`
 	LastStatus  string `json:"lastStatus,omitempty"`
 	LastError   string `json:"lastError,omitempty"`
 }
@@ -53,6 +55,19 @@ type CronJob struct {
 type CronStore struct {
 	Version int       `json:"version"`
 	Jobs    []CronJob `json:"jobs"`
+}
+
+type CronRunLogEntry struct {
+	TS          int64  `json:"ts"`
+	JobID       string `json:"jobId"`
+	RunID       string `json:"runId,omitempty"`
+	Action      string `json:"action"`
+	Status      string `json:"status,omitempty"`
+	Error       string `json:"error,omitempty"`
+	Summary     string `json:"summary,omitempty"`
+	RunAtMS     int64  `json:"runAtMs,omitempty"`
+	DurationMS  int64  `json:"durationMs,omitempty"`
+	NextRunAtMS *int64 `json:"nextRunAtMs,omitempty"`
 }
 
 type JobHandler func(job *CronJob) (string, error)
@@ -175,6 +190,7 @@ func (cs *CronService) checkJobs() {
 
 func (cs *CronService) executeJobByID(jobID string) {
 	startTime := time.Now().UnixMilli()
+	runID := fmt.Sprintf("%d-%s", startTime, generateID()[:8])
 
 	cs.mu.RLock()
 	var callbackJob *CronJob
@@ -182,6 +198,7 @@ func (cs *CronService) executeJobByID(jobID string) {
 		job := &cs.store.Jobs[i]
 		if job.ID == jobID {
 			jobCopy := *job
+			jobCopy.State.LastRunID = runID
 			callbackJob = &jobCopy
 			break
 		}
@@ -192,9 +209,10 @@ func (cs *CronService) executeJobByID(jobID string) {
 		return
 	}
 
+	var result string
 	var err error
 	if cs.onJob != nil {
-		_, err = cs.onJob(callbackJob)
+		result, err = cs.onJob(callbackJob)
 	}
 
 	// Now acquire lock to update state
@@ -214,6 +232,7 @@ func (cs *CronService) executeJobByID(jobID string) {
 	}
 
 	job.State.LastRunAtMS = &startTime
+	job.State.LastRunID = runID
 	job.UpdatedAtMS = time.Now().UnixMilli()
 
 	if err != nil {
@@ -239,6 +258,26 @@ func (cs *CronService) executeJobByID(jobID string) {
 
 	if err := cs.saveStoreUnsafe(); err != nil {
 		log.Printf("[cron] failed to save store: %v", err)
+	}
+
+	endTime := time.Now().UnixMilli()
+	summary := result
+	if len(summary) > 200 {
+		summary = summary[:200]
+	}
+	if logErr := cs.appendRunLog(CronRunLogEntry{
+		TS:          endTime,
+		JobID:       job.ID,
+		RunID:       runID,
+		Action:      "finished",
+		Status:      job.State.LastStatus,
+		Error:       job.State.LastError,
+		Summary:     summary,
+		RunAtMS:     startTime,
+		DurationMS:  endTime - startTime,
+		NextRunAtMS: job.State.NextRunAtMS,
+	}); logErr != nil {
+		log.Printf("[cron] failed to append run log for job %s: %v", job.ID, logErr)
 	}
 }
 
@@ -341,6 +380,31 @@ func (cs *CronService) saveStoreUnsafe() error {
 	}
 
 	return os.WriteFile(cs.storePath, data, 0o600)
+}
+
+func (cs *CronService) runLogPath(jobID string) string {
+	return filepath.Join(filepath.Dir(cs.storePath), "runs", jobID+".jsonl")
+}
+
+func (cs *CronService) appendRunLog(entry CronRunLogEntry) error {
+	logPath := cs.runLogPath(entry.JobID)
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	line, err := json.Marshal(entry)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(append(line, '\n')); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (cs *CronService) AddJob(
@@ -487,6 +551,47 @@ func (cs *CronService) Status() map[string]any {
 		"jobs":         len(cs.store.Jobs),
 		"nextWakeAtMS": cs.getNextWakeMS(),
 	}
+}
+
+func (cs *CronService) GetRunLog(jobID string, limit int) ([]CronRunLogEntry, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 500 {
+		limit = 500
+	}
+
+	logPath := cs.runLogPath(jobID)
+	f, err := os.Open(logPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []CronRunLogEntry{}, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+
+	var all []CronRunLogEntry
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		var entry CronRunLogEntry
+		if err := json.Unmarshal(line, &entry); err != nil {
+			continue
+		}
+		if entry.JobID == "" || entry.Action != "finished" {
+			continue
+		}
+		all = append(all, entry)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	if len(all) <= limit {
+		return all, nil
+	}
+	return all[len(all)-limit:], nil
 }
 
 func generateID() string {

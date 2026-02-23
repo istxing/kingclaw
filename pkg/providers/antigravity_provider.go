@@ -628,25 +628,34 @@ func createAntigravityTokenSource() func() (string, string, error) {
 				"no credentials for google-antigravity. Run: kingclaw auth login --provider google-antigravity",
 			)
 		}
+		profile := cred.Profile
+		if profile == "" {
+			profile = "default"
+		}
 
 		// Refresh if needed
 		if cred.NeedsRefresh() && cred.RefreshToken != "" {
 			oauthCfg := auth.GoogleAntigravityOAuthConfig()
 			refreshed, err := auth.RefreshAccessToken(cred, oauthCfg)
 			if err != nil {
+				_ = auth.MarkCredentialFailure("google-antigravity", profile)
 				return "", "", fmt.Errorf("refreshing token: %w", err)
 			}
 			refreshed.Email = cred.Email
 			if refreshed.ProjectID == "" {
 				refreshed.ProjectID = cred.ProjectID
 			}
+			refreshed.Profile = profile
 			if err := auth.SetCredential("google-antigravity", refreshed); err != nil {
+				_ = auth.MarkCredentialFailure("google-antigravity", profile)
 				return "", "", fmt.Errorf("saving refreshed token: %w", err)
 			}
+			_ = auth.MarkCredentialSuccess("google-antigravity", profile)
 			cred = refreshed
 		}
 
 		if cred.IsExpired() {
+			_ = auth.MarkCredentialFailure("google-antigravity", profile)
 			return "", "", fmt.Errorf(
 				"antigravity credentials expired. Run: kingclaw auth login --provider google-antigravity",
 			)
@@ -668,6 +677,7 @@ func createAntigravityTokenSource() func() (string, string, error) {
 			}
 		}
 
+		_ = auth.MarkCredentialSuccess("google-antigravity", profile)
 		return cred.AccessToken, projectID, nil
 	}
 }

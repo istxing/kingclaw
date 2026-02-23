@@ -408,22 +408,31 @@ func createCodexTokenSource() func() (string, string, error) {
 		if cred == nil {
 			return "", "", fmt.Errorf("no credentials for openai. Run: kingclaw auth login --provider openai")
 		}
+		profile := cred.Profile
+		if profile == "" {
+			profile = "default"
+		}
 
 		if cred.AuthMethod == "oauth" && cred.NeedsRefresh() && cred.RefreshToken != "" {
 			oauthCfg := auth.OpenAIOAuthConfig()
 			refreshed, err := auth.RefreshAccessToken(cred, oauthCfg)
 			if err != nil {
+				_ = auth.MarkCredentialFailure("openai", profile)
 				return "", "", fmt.Errorf("refreshing token: %w", err)
 			}
 			if refreshed.AccountID == "" {
 				refreshed.AccountID = cred.AccountID
 			}
+			refreshed.Profile = profile
 			if err := auth.SetCredential("openai", refreshed); err != nil {
+				_ = auth.MarkCredentialFailure("openai", profile)
 				return "", "", fmt.Errorf("saving refreshed token: %w", err)
 			}
+			_ = auth.MarkCredentialSuccess("openai", profile)
 			return refreshed.AccessToken, refreshed.AccountID, nil
 		}
 
+		_ = auth.MarkCredentialSuccess("openai", profile)
 		return cred.AccessToken, cred.AccountID, nil
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/istxing/kingclaw/pkg/config"
+	"github.com/istxing/kingclaw/pkg/runs"
 )
 
 type ExecTool struct {
@@ -137,16 +138,35 @@ func (t *ExecTool) Parameters() map[string]any {
 }
 
 func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
-	command, ok := args["command"].(string)
-	if !ok {
-		return ErrorResult("command is required")
+	runID := newRunID("exec")
+	startAt := time.Now()
+	cwd := t.workingDir
+	record := func(status, errCode, errMsg, summary string) {
+		appendRunLog(t.workingDir, runs.Entry{
+			RunID:        runID,
+			Status:       status,
+			TS:           startAt.UnixMilli(),
+			DurationMS:   time.Since(startAt).Milliseconds(),
+			ErrorCode:    errCode,
+			ErrorMessage: errMsg,
+			Error:        errMsg,
+			Source:       "exec",
+			Summary:      summary,
+		})
 	}
 
-	cwd := t.workingDir
+	command, ok := args["command"].(string)
+	if !ok {
+		msg := fmt.Sprintf("[exec][run_id=%s] status=failed error_code=invalid_args error=command is required", runID)
+		record("failed", "invalid_args", "command is required", "invalid args")
+		return ErrorResult(msg)
+	}
+
 	if wd, ok := args["working_dir"].(string); ok && wd != "" {
 		if t.restrictToWorkspace && t.workingDir != "" {
 			resolvedWD, err := validatePath(wd, t.workingDir, true)
 			if err != nil {
+				record("failed", "invalid_working_dir", err.Error(), "invalid working directory")
 				return ErrorResult("Command blocked by safety guard (" + err.Error() + ")")
 			}
 			cwd = resolvedWD
@@ -163,7 +183,9 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *ToolResult
 	}
 
 	if guardError := t.guardCommand(command, cwd); guardError != "" {
-		return ErrorResult(guardError)
+		msg := fmt.Sprintf("[exec][run_id=%s] status=failed error_code=safety_blocked error=%s", runID, guardError)
+		record("failed", "safety_blocked", guardError, "safety blocked")
+		return ErrorResult(msg)
 	}
 
 	// timeout == 0 means no timeout
@@ -193,7 +215,9 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *ToolResult
 	cmd.Stderr = &stderr
 
 	if err := cmd.Start(); err != nil {
-		return ErrorResult(fmt.Sprintf("failed to start command: %v", err))
+		msg := fmt.Sprintf("[exec][run_id=%s] status=failed error_code=start_failed error=failed to start command: %v", runID, err)
+		record("failed", "start_failed", err.Error(), "start failed")
+		return ErrorResult(msg)
 	}
 
 	done := make(chan error, 1)
@@ -223,7 +247,8 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *ToolResult
 
 	if err != nil {
 		if errors.Is(cmdCtx.Err(), context.DeadlineExceeded) {
-			msg := fmt.Sprintf("Command timed out after %v", t.timeout)
+			msg := fmt.Sprintf("[exec][run_id=%s] status=failed error_code=timeout error=Command timed out after %v", runID, t.timeout)
+			record("failed", "timeout", "Command timed out", "command timeout")
 			return &ToolResult{
 				ForLLM:  msg,
 				ForUser: msg,
@@ -243,6 +268,8 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *ToolResult
 	}
 
 	if err != nil {
+		output = fmt.Sprintf("[exec][run_id=%s] status=failed error_code=command_failed\n%s", runID, output)
+		record("failed", "command_failed", err.Error(), "command failed")
 		return &ToolResult{
 			ForLLM:  output,
 			ForUser: output,
@@ -250,6 +277,8 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *ToolResult
 		}
 	}
 
+	output = fmt.Sprintf("[exec][run_id=%s] status=completed exit_code=0\n%s", runID, output)
+	record("completed", "", "", "command completed")
 	return &ToolResult{
 		ForLLM:  output,
 		ForUser: output,

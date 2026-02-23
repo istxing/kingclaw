@@ -37,6 +37,8 @@ func TestSave_WithColonInKey(t *testing.T) {
 	key := "telegram:123456"
 	sm.GetOrCreate(key)
 	sm.AddMessage(key, "user", "hello")
+	sm.SetThinkingLevel(key, "medium")
+	sm.SetVerboseLevel(key, "full")
 
 	// Save should succeed even though the key contains ':'
 	if err := sm.Save(key); err != nil {
@@ -57,6 +59,34 @@ func TestSave_WithColonInKey(t *testing.T) {
 	}
 	if history[0].Content != "hello" {
 		t.Errorf("expected message content %q, got %q", "hello", history[0].Content)
+	}
+	if got := sm2.GetThinkingLevel(key); got != "medium" {
+		t.Errorf("thinking level = %q, want %q", got, "medium")
+	}
+	if got := sm2.GetVerboseLevel(key); got != "full" {
+		t.Errorf("verbose level = %q, want %q", got, "full")
+	}
+}
+
+func TestSessionOverrides_SetAndGet(t *testing.T) {
+	sm := NewSessionManager("")
+	key := "cli:default"
+
+	if got := sm.GetThinkingLevel(key); got != "" {
+		t.Fatalf("initial thinking = %q, want empty", got)
+	}
+	if got := sm.GetVerboseLevel(key); got != "" {
+		t.Fatalf("initial verbose = %q, want empty", got)
+	}
+
+	sm.SetThinkingLevel(key, "low")
+	sm.SetVerboseLevel(key, "on")
+
+	if got := sm.GetThinkingLevel(key); got != "low" {
+		t.Fatalf("thinking = %q, want low", got)
+	}
+	if got := sm.GetVerboseLevel(key); got != "on" {
+		t.Fatalf("verbose = %q, want on", got)
 	}
 }
 

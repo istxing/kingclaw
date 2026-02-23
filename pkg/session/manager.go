@@ -12,11 +12,13 @@ import (
 )
 
 type Session struct {
-	Key      string              `json:"key"`
-	Messages []providers.Message `json:"messages"`
-	Summary  string              `json:"summary,omitempty"`
-	Created  time.Time           `json:"created"`
-	Updated  time.Time           `json:"updated"`
+	Key           string              `json:"key"`
+	Messages      []providers.Message `json:"messages"`
+	Summary       string              `json:"summary,omitempty"`
+	ThinkingLevel string              `json:"thinking_level,omitempty"`
+	VerboseLevel  string              `json:"verbose_level,omitempty"`
+	Created       time.Time           `json:"created"`
+	Updated       time.Time           `json:"updated"`
 }
 
 type SessionManager struct {
@@ -122,6 +124,46 @@ func (sm *SessionManager) SetSummary(key string, summary string) {
 	}
 }
 
+func (sm *SessionManager) SetThinkingLevel(key, level string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	session := sm.getOrCreateLocked(key)
+	session.ThinkingLevel = strings.TrimSpace(level)
+	session.Updated = time.Now()
+}
+
+func (sm *SessionManager) GetThinkingLevel(key string) string {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	session, ok := sm.sessions[key]
+	if !ok {
+		return ""
+	}
+	return session.ThinkingLevel
+}
+
+func (sm *SessionManager) SetVerboseLevel(key, level string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	session := sm.getOrCreateLocked(key)
+	session.VerboseLevel = strings.TrimSpace(level)
+	session.Updated = time.Now()
+}
+
+func (sm *SessionManager) GetVerboseLevel(key string) string {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	session, ok := sm.sessions[key]
+	if !ok {
+		return ""
+	}
+	return session.VerboseLevel
+}
+
 func (sm *SessionManager) TruncateHistory(key string, keepLast int) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -178,10 +220,12 @@ func (sm *SessionManager) Save(key string) error {
 	}
 
 	snapshot := Session{
-		Key:     stored.Key,
-		Summary: stored.Summary,
-		Created: stored.Created,
-		Updated: stored.Updated,
+		Key:           stored.Key,
+		Summary:       stored.Summary,
+		ThinkingLevel: stored.ThinkingLevel,
+		VerboseLevel:  stored.VerboseLevel,
+		Created:       stored.Created,
+		Updated:       stored.Updated,
 	}
 	if len(stored.Messages) > 0 {
 		snapshot.Messages = make([]providers.Message, len(stored.Messages))
@@ -279,4 +323,19 @@ func (sm *SessionManager) SetHistory(key string, history []providers.Message) {
 		session.Messages = msgs
 		session.Updated = time.Now()
 	}
+}
+
+func (sm *SessionManager) getOrCreateLocked(key string) *Session {
+	session, ok := sm.sessions[key]
+	if ok {
+		return session
+	}
+	session = &Session{
+		Key:      key,
+		Messages: []providers.Message{},
+		Created:  time.Now(),
+		Updated:  time.Now(),
+	}
+	sm.sessions[key] = session
+	return session
 }

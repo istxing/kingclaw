@@ -7,9 +7,14 @@
 package channels
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/istxing/kingclaw/pkg/bus"
 	"github.com/istxing/kingclaw/pkg/config"
@@ -22,6 +27,7 @@ type Manager struct {
 	bus          *bus.MessageBus
 	config       *config.Config
 	dispatchTask *asyncTask
+	retryQueue   chan outboundRetry
 	mu           sync.RWMutex
 }
 
@@ -29,11 +35,27 @@ type asyncTask struct {
 	cancel context.CancelFunc
 }
 
+type outboundRetry struct {
+	Msg      bus.OutboundMessage `json:"msg"`
+	Attempts int                 `json:"attempts"`
+	LastErr  string              `json:"last_error,omitempty"`
+}
+
+type outboundFailureEntry struct {
+	TS       int64  `json:"ts"`
+	Channel  string `json:"channel"`
+	ChatID   string `json:"chat_id"`
+	Content  string `json:"content"`
+	Error    string `json:"error"`
+	Attempts int    `json:"attempts"`
+}
+
 func NewManager(cfg *config.Config, messageBus *bus.MessageBus) (*Manager, error) {
 	m := &Manager{
-		channels: make(map[string]Channel),
-		bus:      messageBus,
-		config:   cfg,
+		channels:   make(map[string]Channel),
+		bus:        messageBus,
+		config:     cfg,
+		retryQueue: make(chan outboundRetry, 200),
 	}
 
 	if err := m.initChannels(); err != nil {
@@ -224,6 +246,7 @@ func (m *Manager) StartAll(ctx context.Context) error {
 	m.dispatchTask = &asyncTask{cancel: cancel}
 
 	go m.dispatchOutbound(dispatchCtx)
+	go m.replayOutbound(dispatchCtx)
 
 	for name, channel := range m.channels {
 		logger.InfoCF("channels", "Starting channel", map[string]any{
@@ -298,14 +321,143 @@ func (m *Manager) dispatchOutbound(ctx context.Context) {
 				continue
 			}
 
-			if err := channel.Send(ctx, msg); err != nil {
-				logger.ErrorCF("channels", "Error sending message to channel", map[string]any{
+			if err := m.sendWithRetry(ctx, channel, msg, 3); err != nil {
+				logger.ErrorCF("channels", "Error sending message to channel after retries", map[string]any{
 					"channel": msg.Channel,
 					"error":   err.Error(),
 				})
+				m.appendOutboundFailure(outboundFailureEntry{
+					TS:       time.Now().UnixMilli(),
+					Channel:  msg.Channel,
+					ChatID:   msg.ChatID,
+					Content:  msg.Content,
+					Error:    err.Error(),
+					Attempts: 3,
+				})
+				select {
+				case m.retryQueue <- outboundRetry{Msg: msg, Attempts: 0, LastErr: err.Error()}:
+				default:
+					logger.WarnC("channels", "Retry queue full, dropping replay task")
+				}
 			}
 		}
 	}
+}
+
+func (m *Manager) replayOutbound(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case task := <-m.retryQueue:
+			wait := time.Duration((task.Attempts+1)*10) * time.Second
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			m.mu.RLock()
+			channel, exists := m.channels[task.Msg.Channel]
+			m.mu.RUnlock()
+			if !exists {
+				continue
+			}
+			if err := m.sendWithRetry(ctx, channel, task.Msg, 2); err != nil {
+				task.Attempts++
+				task.LastErr = err.Error()
+				m.appendOutboundFailure(outboundFailureEntry{
+					TS:       time.Now().UnixMilli(),
+					Channel:  task.Msg.Channel,
+					ChatID:   task.Msg.ChatID,
+					Content:  task.Msg.Content,
+					Error:    "replay_failed: " + err.Error(),
+					Attempts: task.Attempts + 3,
+				})
+				if task.Attempts < 3 {
+					select {
+					case m.retryQueue <- task:
+					default:
+						logger.WarnC("channels", "Retry queue full during replay")
+					}
+				}
+			}
+		}
+	}
+}
+
+func (m *Manager) sendWithRetry(
+	ctx context.Context,
+	channel Channel,
+	msg bus.OutboundMessage,
+	maxAttempts int,
+) error {
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := channel.Send(ctx, msg); err != nil {
+			lastErr = err
+			backoff := time.Duration(attempt*attempt) * 500 * time.Millisecond
+			logger.WarnCF("channels", "Outbound send failed, retrying", map[string]any{
+				"channel": msg.Channel,
+				"attempt": attempt,
+				"max":     maxAttempts,
+				"error":   err.Error(),
+			})
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+			continue
+		}
+		return nil
+	}
+	if lastErr == nil {
+		return fmt.Errorf("send failed without error")
+	}
+	return lastErr
+}
+
+func (m *Manager) appendOutboundFailure(entry outboundFailureEntry) {
+	path := filepath.Join(m.config.WorkspacePath(), "channels", "outbound_failures.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	line, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	_, _ = f.Write(append(line, '\n'))
+}
+
+func (m *Manager) LoadRecentOutboundFailures(limit int) []outboundFailureEntry {
+	if limit <= 0 {
+		limit = 20
+	}
+	path := filepath.Join(m.config.WorkspacePath(), "channels", "outbound_failures.jsonl")
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	var all []outboundFailureEntry
+	for scanner.Scan() {
+		var e outboundFailureEntry
+		if err := json.Unmarshal(scanner.Bytes(), &e); err == nil {
+			all = append(all, e)
+		}
+	}
+	if len(all) <= limit {
+		return all
+	}
+	return all[len(all)-limit:]
 }
 
 func (m *Manager) GetChannel(name string) (Channel, bool) {
